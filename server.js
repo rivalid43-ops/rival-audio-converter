@@ -62,7 +62,7 @@ setInterval(() => {
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 100 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => cb(null, file.mimetype.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|flac|aac)$/i.test(file.originalname))
+  fileFilter: (req, file, cb) => cb(null, file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') || /\.(mp3|wav|ogg|m4a|flac|aac|mp4|mov|mkv|webm|avi)$/i.test(file.originalname))
 });
 
 function configReady() {
@@ -232,13 +232,13 @@ app.post('/api/youtube/validate', (req, res) => {
 });
 
 app.post('/api/convert', upload.single('audio'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
+  if (!req.file) return res.status(400).json({ error: 'File musik atau video wajib dipilih.' });
   const format = String(req.body.format || 'mp3').toLowerCase();
   const quality = String(req.body.quality || '192');
-  if (!['mp3', 'wav', 'ogg'].includes(format)) { cleanup(req.file.path); return res.status(400).json({ error: 'Format output tidak didukung.' }); }
+  if (!['mp3', 'wav', 'ogg', 'flac'].includes(format)) { cleanup(req.file.path); return res.status(400).json({ error: 'Format output tidak didukung.' }); }
   const id = crypto.randomUUID();
   const output = path.join(outputDir, `${id}.${format}`);
-  const args = format === 'wav' ? ['-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le'] : format === 'ogg' ? ['-ar', '48000', '-ac', '2', '-c:a', 'libvorbis', '-q:a', quality === '320' ? '8' : quality === '128' ? '4' : '6'] : ['-ar', '48000', '-ac', '2', '-c:a', 'libmp3lame', '-b:a', `${quality}k`];
+  const args = format === 'wav' ? ['-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le'] : format === 'flac' ? ['-ar', '48000', '-ac', '2', '-c:a', 'flac'] : format === 'ogg' ? ['-ar', '48000', '-ac', '2', '-c:a', 'libvorbis', '-q:a', quality === '320' ? '8' : quality === '128' ? '4' : '6'] : ['-ar', '48000', '-ac', '2', '-c:a', 'libmp3lame', '-b:a', `${quality}k`];
   try {
     await runFfmpeg(req.file.path, output, args);
     cleanup(req.file.path);
@@ -262,21 +262,33 @@ app.post('/api/optimize', upload.single('audio'), async (req, res) => {
 app.post('/api/remix', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
   const remixSpeed = Number(req.body.speed);
+  const format = String(req.body.format || 'mp3').toLowerCase();
   if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 2) {
     cleanup(req.file.path);
     return res.status(400).json({ error: 'Speed remix harus antara 0.50x dan 2.00x.' });
   }
+  if (!['mp3', 'ogg', 'flac', 'wav'].includes(format)) {
+    cleanup(req.file.path);
+    return res.status(400).json({ error: 'Format remix harus MP3, OGG, FLAC, atau WAV.' });
+  }
   const id = crypto.randomUUID();
-  const output = path.join(outputDir, `${id}.mp3`);
+  const output = path.join(outputDir, `${id}.${format}`);
+  const codecArgs = format === 'wav'
+    ? ['-c:a', 'pcm_s16le']
+    : format === 'flac'
+      ? ['-c:a', 'flac']
+      : format === 'ogg'
+        ? ['-c:a', 'libvorbis', '-q:a', '6']
+        : ['-c:a', 'libmp3lame', '-b:a', '192k'];
   try {
-    await runFfmpeg(req.file.path, output, ['-filter:a', `atempo=${remixSpeed}`, '-codec:a', 'libmp3lame', '-b:a', '192k']);
+    await runFfmpeg(req.file.path, output, ['-filter:a', `atempo=${remixSpeed}`, ...codecArgs]);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
-    const fileName = `${originalName}-remix-${remixSpeed.toFixed(2)}x.mp3`;
-    const metadata = { originalSpeed: 1, remixSpeed, robloxPlaybackSpeed: Number((1 / remixSpeed).toFixed(3)) };
+    const fileName = `${originalName}-remix-${remixSpeed.toFixed(2)}x.${format}`;
+    const metadata = { originalSpeed: 1, remixSpeed, robloxPlaybackSpeed: Number((1 / remixSpeed).toFixed(3)), format };
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
-    res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${id}.mp3`, ...metadata });
+    res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${id}.${format}`, ...metadata });
   } catch (error) {
     cleanup(req.file.path, output);
     res.status(500).json({ error: error.message });
