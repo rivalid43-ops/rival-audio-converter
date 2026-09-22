@@ -1,5 +1,6 @@
 const express = require('express');
 const session = require('express-session');
+const SQLiteStore = require('connect-sqlite3')(session);
 const multer = require('multer');
 const dotenv = require('dotenv');
 const crypto = require('crypto');
@@ -11,6 +12,21 @@ const root = __dirname;
 dotenv.config({ path: path.resolve(root, '.env') });
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID);
+const isProduction = process.env.NODE_ENV === 'production' || isRailway;
+const googleClientId = String(process.env.GOOGLE_CLIENT_ID || '').trim();
+const googleClientSecret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
+const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+console.log("GOOGLE_REDIRECT_URI:", process.env.GOOGLE_REDIRECT_URI);
+if (!String(process.env.GOOGLE_REDIRECT_URI || '').trim()) console.error('Google OAuth belum aktif: GOOGLE_REDIRECT_URI wajib diatur di environment variable.');
+if (!publicBaseUrl) console.error('Google OAuth callback belum lengkap: PUBLIC_BASE_URL wajib diatur di environment variable.');
+const configuredSessionSecret = String(process.env.SESSION_SECRET || '').trim();
+const hasConfiguredSessionSecret = configuredSessionSecret && configuredSessionSecret !== 'replace-with-a-long-random-value';
+if (isProduction && !hasConfiguredSessionSecret) {
+  throw new Error('SESSION_SECRET wajib diatur di environment variable saat production.');
+}
+const effectiveSessionSecret = hasConfiguredSessionSecret ? configuredSessionSecret : crypto.randomBytes(32).toString('hex');
+app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -19,10 +35,12 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
   name: 'rival.sid',
-  secret: process.env.SESSION_SECRET,
+  secret: effectiveSessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 }
+  proxy: true,
+  store: isProduction ? new SQLiteStore({ db: 'sessions.sqlite', dir: path.join(root, 'database') }) : undefined,
+  cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
 const clientDist = path.join(root, 'client', 'dist');
 app.use(express.static(fs.existsSync(clientDist) ? clientDist : root));
@@ -49,13 +67,13 @@ function robloxConfig() {
 }
 function robloxMissingMessage(config) {
   const missing = config.missing.length ? config.missing.join(', ') : 'Tidak ada';
-  const redirectUri = String(process.env.ROBLOX_REDIRECT_URI || 'http://localhost:3000/auth/roblox/callback');
+  const redirectUri = String(process.env.ROBLOX_REDIRECT_URI || 'belum diatur');
   return `Roblox OAuth belum dikonfigurasi. Isi ROBLOX_CLIENT_ID dan ROBLOX_CLIENT_SECRET sendiri dari aplikasi Roblox OAuth Anda di ${config.loadedFrom}. Redirect URI yang harus dipakai di Roblox App: ${redirectUri}. Variabel yang masih kosong: ${missing}.`;
 }
 function googleReady() {
-  return [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI].every((value) => value && !value.startsWith('your-') && !value.startsWith('PASTE_'));
+  return [googleClientId, googleClientSecret, process.env.GOOGLE_REDIRECT_URI, publicBaseUrl].every((value) => value && !value.startsWith('your-') && !value.startsWith('PASTE_'));
 }
-function sessionSecret() { return process.env.SESSION_SECRET && process.env.SESSION_SECRET !== 'replace-with-a-long-random-value' ? process.env.SESSION_SECRET : null; }
+function sessionSecret() { return effectiveSessionSecret; }
 function signSession(sessionId) { const signature = crypto.createHmac('sha256', sessionSecret()).update(sessionId).digest('hex'); return `${sessionId}.${signature}`; }
 function readCookie(req, name) { const cookies = String(req.headers.cookie || '').split(';').map((item) => item.trim()); const value = cookies.find((item) => item.startsWith(`${name}=`)); return value ? decodeURIComponent(value.slice(name.length + 1)) : ''; }
 function authSession(req) {
@@ -67,10 +85,10 @@ function authSession(req) {
   if (signature.length !== expected.length) return null;
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) ? sessions.get(sessionId) : null;
 }
-function authCookie(value, maxAge = 7 * 24 * 60 * 60) { return `rival_auth=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`; }
+function authCookie(value, maxAge = 7 * 24 * 60 * 60) { return `rival_auth=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${isProduction ? '; Secure' : ''}`; }
 function googleStateCookie(value, maxAge = 10 * 60) {
   const payload = value ? `${value}.${crypto.createHmac('sha256', sessionSecret()).update(`google:${value}`).digest('hex')}` : '';
-  return `rival_google_oauth_state=${encodeURIComponent(payload)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+  return `rival_google_oauth_state=${encodeURIComponent(payload)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${isProduction ? '; Secure' : ''}`;
 }
 function readSignedCookie(req, name, prefix) {
   const raw = readCookie(req, name);
@@ -84,7 +102,7 @@ function readSignedCookie(req, name, prefix) {
   if (signature.length !== expected.length) return null;
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) ? value : null;
 }
-function robloxCookie(value, maxAge = 30 * 24 * 60 * 60) { return `rival_roblox=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`; }
+function robloxCookie(value, maxAge = 30 * 24 * 60 * 60) { return `rival_roblox=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${isProduction ? '; Secure' : ''}`; }
 function robloxSession(req) {
   const value = readCookie(req, 'rival_roblox');
   if (!value || !sessionSecret()) return null;
@@ -155,31 +173,32 @@ app.post('/api/auth/logout', (req, res) => {
 });
 app.get('/auth/google', (req, res) => {
   if (!sessionSecret()) return res.status(503).send('SESSION_SECRET belum dikonfigurasi dengan nilai random yang aman.');
-  if (!googleReady()) return res.status(503).send('Google OAuth belum dikonfigurasi. Isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, dan GOOGLE_REDIRECT_URI di .env.');
+  if (!googleReady()) return res.status(503).send('Google OAuth belum dikonfigurasi. Isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, dan PUBLIC_BASE_URL di environment variable.');
   const state = crypto.randomBytes(24).toString('hex');
   req.session.googleOAuthState = state;
   const stateCookie = googleStateCookie(state);
-  const params = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID, redirect_uri: process.env.GOOGLE_REDIRECT_URI, response_type: 'code', scope: 'openid email profile', state, access_type: 'offline', prompt: 'select_account' });
+  const params = new URLSearchParams({ client_id: googleClientId, redirect_uri: process.env.GOOGLE_REDIRECT_URI, response_type: 'code', scope: 'openid email profile', state, access_type: 'offline', prompt: 'select_account' });
   req.session.save((error) => {
     if (error) return res.status(500).send('Session OAuth Google gagal disimpan.');
-    res.setHeader('Set-Cookie', [stateCookie]);
+    res.append('Set-Cookie', stateCookie);
     res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
   });
 });
 app.get('/auth/google/callback', async (req, res) => {
+  if (!googleReady()) return res.status(503).send('Google OAuth belum dikonfigurasi. Isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, dan PUBLIC_BASE_URL di environment variable.');
   const receivedState = String(req.query.state || '');
   const expectedStateFromSession = req.session.googleOAuthState;
   const expectedStateFromCookie = readSignedCookie(req, 'rival_google_oauth_state', 'google');
   const expectedState = expectedStateFromSession || expectedStateFromCookie;
   if (!expectedState || !receivedState || expectedState.length !== receivedState.length || !crypto.timingSafeEqual(Buffer.from(expectedState), Buffer.from(receivedState))) {
-    res.setHeader('Set-Cookie', googleStateCookie('', 0));
+    res.append('Set-Cookie', googleStateCookie('', 0));
     return res.status(400).send('Google OAuth state tidak valid. Silakan coba lagi.');
   }
   delete req.session.googleOAuthState;
-  res.setHeader('Set-Cookie', googleStateCookie('', 0));
+  res.append('Set-Cookie', googleStateCookie('', 0));
   await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
   try {
-    const body = new URLSearchParams({ code: req.query.code, client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET, redirect_uri: process.env.GOOGLE_REDIRECT_URI, grant_type: 'authorization_code' });
+    const body = new URLSearchParams({ code: req.query.code, client_id: googleClientId, client_secret: googleClientSecret, redirect_uri: process.env.GOOGLE_REDIRECT_URI, grant_type: 'authorization_code' });
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
     const tokens = await tokenResponse.json();
     if (!tokenResponse.ok) throw new Error(tokens.error_description || 'Google token exchange gagal.');
@@ -188,8 +207,7 @@ app.get('/auth/google/callback', async (req, res) => {
     if (!profileResponse.ok || !profile.sub) throw new Error('Profil Google tidak dapat diverifikasi.');
     req.session.googleUser = { id: profile.sub, name: profile.name || profile.email, email: profile.email, avatar: profile.picture || '' };
     await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
-    const frontendUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${port}`;
-    res.redirect(`${frontendUrl}/`);
+    res.redirect(`${publicBaseUrl}/`);
   } catch (error) { res.status(502).send(`Google OAuth gagal: ${error.message}`); }
 });
 
@@ -259,7 +277,8 @@ app.get('/auth/roblox/callback', async (req, res) => {
     setRobloxServerSession(req, sessionData);
     await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
     res.setHeader('Set-Cookie', robloxCookie(signRobloxSession(sessionId)));
-    const frontendUrl = process.env.PUBLIC_BASE_URL || `http://localhost:${port}`;
+    if (!publicBaseUrl) return res.status(503).send('PUBLIC_BASE_URL wajib diatur untuk callback Roblox.');
+    const frontendUrl = publicBaseUrl;
     res.send(`<!doctype html><meta charset="utf-8"><title>Roblox connected</title><script>window.opener?.postMessage({type:'roblox-oauth',status:'success'},${JSON.stringify(frontendUrl)});window.location.replace(${JSON.stringify(`${frontendUrl}/?roblox=success`)});if(window.opener)window.close();</script><p>Roblox connected. You can close this window.</p>`);
   } catch (error) { res.status(502).send(`Roblox OAuth gagal: ${error.message}`); }
 });
@@ -315,4 +334,4 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
 });
 
 app.get('*', (req, res) => res.sendFile(path.join(fs.existsSync(clientDist) ? clientDist : root, 'index.html')));
-app.listen(port, () => console.log(`Rival Audio Converter running at http://localhost:${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Rival Audio Converter listening on port ${port}`));

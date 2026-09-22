@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronRight, CircleHelp, CloudUpload,
@@ -38,11 +38,40 @@ function App() {
   const [notice, setNotice] = useState('');
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const interactionAudioRef = useRef(null);
 
   useEffect(() => {
-    fetch('/api/auth/me', { credentials: 'same-origin' }).then((res) => res.ok ? res.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));
-    fetch('/api/auth/roblox/me', { credentials: 'same-origin' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setSession({ connected: true, name: data.user.displayName, userId: data.user.id, username: data.user.username }); }).catch(() => {});
-    fetch('/api/session', { credentials: 'same-origin' }).then((res) => res.json()).then((data) => { if (data.history?.length) setHistory(data.history.map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() }))); }).catch(() => {});
+    const playInteractionSound = (event) => {
+      const target = event.target.closest?.('button, a, input, select, textarea, [role="button"]');
+      if (!target) return;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      const audioContext = interactionAudioRef.current || new AudioContext();
+      interactionAudioRef.current = audioContext;
+      if (audioContext.state === 'suspended') audioContext.resume();
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const now = audioContext.currentTime;
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(540, now);
+      oscillator.frequency.exponentialRampToValueAtTime(390, now + 0.045);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.045, now + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.start(now);
+      oscillator.stop(now + 0.06);
+    };
+
+    document.addEventListener('pointerdown', playInteractionSound);
+    return () => document.removeEventListener('pointerdown', playInteractionSound);
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/auth/me', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));
+    fetch('/api/auth/roblox/me', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setSession({ connected: true, name: data.user.displayName, userId: data.user.id, username: data.user.username }); }).catch(() => {});
+    fetch('/api/session', { credentials: 'include' }).then((res) => res.json()).then((data) => { if (data.history?.length) setHistory(data.history.map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() }))); }).catch(() => {});
   }, []);
 
   const navigate = (next) => { routerNavigate(`/${next}`); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
@@ -56,7 +85,7 @@ function App() {
     if (!result) return setNotice('Convert audio dahulu.');
     if (!session.connected) return setNotice('Silakan login dengan Roblox terlebih dahulu.');
     setBusy(true); setNotice('Uploading...');
-    try { const blob = await fetch(result.downloadUrl).then((res) => res.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('description', 'Uploaded from Rival Audio Converter'); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'same-origin', body: form }); const payload = await response.json(); if (!response.ok || payload.success !== true) throw new Error(payload.message || payload.error || 'Roblox sedang memproses asset.'); setResult((current) => ({ ...current, assetId: payload.assetId })); setNotice(`Upload Successful · Asset ID ${payload.assetId}`); setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'PROCESSING', id: payload.assetId, date: 'Just now' }, ...items]); } catch (error) { setNotice(error.message || 'Upload failed.'); } finally { setBusy(false); }
+    try { const blob = await fetch(result.downloadUrl).then((res) => res.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('description', 'Uploaded from Rival Audio Converter'); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form }); const payload = await response.json(); if (!response.ok || payload.success !== true) throw new Error(payload.message || payload.error || 'Roblox sedang memproses asset.'); setResult((current) => ({ ...current, assetId: payload.assetId })); setNotice(`Upload Successful · Asset ID ${payload.assetId}`); setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'PROCESSING', id: payload.assetId, date: 'Just now' }, ...items]); } catch (error) { setNotice(error.message || 'Upload failed.'); } finally { setBusy(false); }
   };
 
   if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
