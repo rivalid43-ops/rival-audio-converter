@@ -47,6 +47,18 @@ app.use(express.static(fs.existsSync(clientDist) ? clientDist : root));
 
 const sessions = new Map();
 const history = [];
+const activeVisitors = new Map();
+app.post('/api/presence', (req, res) => {
+  const visitorId = String(req.body.visitorId || '').trim();
+  if (!visitorId) return res.status(400).json({ error: 'visitorId wajib diisi.' });
+  activeVisitors.set(visitorId, Date.now());
+  res.json({ online: activeVisitors.size });
+});
+app.get('/api/online', (req, res) => res.json({ online: activeVisitors.size }));
+setInterval(() => {
+  const cutoff = Date.now() - 45 * 1000;
+  for (const [visitorId, lastSeen] of activeVisitors) if (lastSeen < cutoff) activeVisitors.delete(visitorId);
+}, 15 * 1000).unref();
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 100 * 1024 * 1024 },
@@ -233,6 +245,42 @@ app.post('/api/convert', upload.single('audio'), async (req, res) => {
     const stat = fs.statSync(output);
     res.json({ id, name: `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}.${format}`, format, size: stat.size, downloadUrl: `/api/download/${id}.${format}` });
   } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
+});
+app.post('/api/optimize', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
+  const id = crypto.randomUUID();
+  const output = path.join(outputDir, `${id}.mp3`);
+  try {
+    await runFfmpeg(req.file.path, output, ['-filter:a', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-codec:a', 'libmp3lame', '-b:a', '192k']);
+    cleanup(req.file.path);
+    const stat = fs.statSync(output);
+    const name = `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}-optimized.mp3`;
+    setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
+    res.json({ id, name, size: stat.size, downloadUrl: `/api/download/${id}.mp3` });
+  } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
+});
+app.post('/api/remix', upload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
+  const remixSpeed = Number(req.body.speed);
+  if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 2) {
+    cleanup(req.file.path);
+    return res.status(400).json({ error: 'Speed remix harus antara 0.50x dan 2.00x.' });
+  }
+  const id = crypto.randomUUID();
+  const output = path.join(outputDir, `${id}.mp3`);
+  try {
+    await runFfmpeg(req.file.path, output, ['-filter:a', `atempo=${remixSpeed}`, '-codec:a', 'libmp3lame', '-b:a', '192k']);
+    cleanup(req.file.path);
+    const stat = fs.statSync(output);
+    const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
+    const fileName = `${originalName}-remix-${remixSpeed.toFixed(2)}x.mp3`;
+    const metadata = { originalSpeed: 1, remixSpeed, robloxPlaybackSpeed: Number((1 / remixSpeed).toFixed(3)) };
+    setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
+    res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${id}.mp3`, ...metadata });
+  } catch (error) {
+    cleanup(req.file.path, output);
+    res.status(500).json({ error: error.message });
+  }
 });
 app.get('/api/download/:file', (req, res) => {
   const file = path.basename(req.params.file);
