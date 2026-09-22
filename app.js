@@ -1,0 +1,65 @@
+const $ = (selector) => document.querySelector(selector);
+const fileInput = $('#fileInput');
+const dropzone = $('#dropzone');
+let selectedFile = null;
+let converted = null;
+let sessionId = '';
+
+function setText(selector, value) { $(selector).textContent = value; }
+function formatBytes(bytes) { return `${(bytes / 1024 / 1024).toFixed(2)} MB`; }
+function show(selector, visible) { $(selector).classList.toggle('hidden', !visible); }
+function setProgress(value, label) { setText('#progressValue', `${value}%`); setText('#progressLabel', label); $('#progressBar').style.width = `${value}%`; }
+function setNotice(message, type = '') { const element = $('#uploadStatus'); element.textContent = message; element.className = `upload-status ${type}`; }
+function updateFile(file) { if (!file || !file.type.startsWith('audio/')) return setNotice('Pilih file audio yang valid.', 'error'); selectedFile = file; setText('#fileTitle', file.name); setText('#fileMeta', `${formatBytes(file.size)} · ${file.type || 'audio'}`); show('#fileSummary', true); show('#dropzone', false); $('#convertButton').disabled = false; $('#previewButton').disabled = false; }
+function clearFile() { selectedFile = null; converted = null; fileInput.value = ''; show('#fileSummary', false); show('#dropzone', true); show('#resultCard', false); $('#convertButton').disabled = true; $('#previewButton').disabled = true; }
+async function convertAudio() { if (!selectedFile) return; const form = new FormData(); form.append('audio', selectedFile); form.append('format', $('#format').value); form.append('quality', $('#quality').value); $('#convertButton').disabled = true; show('#progressWrap', true); setProgress(12, 'Uploading audio...'); const timer = setInterval(() => { const current = Number($('#progressValue').textContent.replace('%', '')); if (current < 86) setProgress(current + 7, 'Converting with FFmpeg...'); }, 350); try { const response = await fetch('/api/convert', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Conversion failed'); converted = data; setProgress(100, 'Conversion complete'); setText('#resultName', data.name); $('#resultPlayer').src = data.downloadUrl; $('#downloadButton').href = data.downloadUrl; show('#resultCard', true); setNotice('', ''); } catch (error) { setNotice(error.message, 'error'); setProgress(0, 'Conversion failed'); } finally { clearInterval(timer); $('#convertButton').disabled = false; } }
+async function validateYoutube() { const response = await fetch('/api/youtube/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: $('#youtubeUrl').value }) }); const data = await response.json(); setText('#youtubeMessage', data.message || data.error); $('#youtubeMessage').className = response.ok ? 'valid' : 'error'; }
+async function uploadToRoblox() { if (!converted) return; const blob = await fetch(converted.downloadUrl).then((response) => response.blob()); const form = new FormData(); form.append('audio', blob, converted.name); form.append('name', converted.name); $('#uploadButton').disabled = true; setNotice('Mengirim asset ke Roblox dan menunggu status moderasi...'); try { const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'same-origin', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload gagal'); setNotice(`Asset ID: ${data.id || 'pending'} · ${data.status}`, 'success'); $('#copyAssetButton').dataset.id = data.id || ''; show('#copyAssetButton', Boolean(data.id)); loadHistory(); } catch (error) { setNotice(error.message, 'error'); } finally { $('#uploadButton').disabled = false; } }
+async function loadHistory() { const response = await fetch('/api/session', { credentials: 'same-origin' }); const data = await response.json(); const list = $('#historyList'); list.innerHTML = data.history?.length ? data.history.map((item) => `<div class="history-item"><span class="history-icon">♫</span><div><strong>${item.name}</strong><small>Roblox Audio Asset · ${item.status}</small></div><b>${item.id || 'PENDING'}</b><button class="copy-id" data-id="${item.id || ''}">Copy ID</button></div>`).join('') : '<p class="empty-state">Belum ada audio yang di-upload ke Roblox.</p>'; list.querySelectorAll('.copy-id').forEach((button) => button.addEventListener('click', () => navigator.clipboard.writeText(button.dataset.id))); }
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') fileInput.click(); });
+fileInput.addEventListener('change', (event) => updateFile(event.target.files[0]));
+['dragenter', 'dragover'].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.add('dragover'); }));
+['dragleave', 'drop'].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.remove('dragover'); }));
+dropzone.addEventListener('drop', (event) => updateFile(event.dataTransfer.files[0]));
+$('#removeFile').addEventListener('click', clearFile); $('#convertButton').addEventListener('click', convertAudio); $('#uploadButton').addEventListener('click', uploadToRoblox); $('#connectButton').addEventListener('click', () => { window.location.href = '/auth/roblox'; }); $('#validateYoutube').addEventListener('click', validateYoutube);
+$('#copyAssetButton').addEventListener('click', () => navigator.clipboard.writeText($('#copyAssetButton').dataset.id));
+document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => { document.querySelector('.tab.active').classList.remove('active'); tab.classList.add('active'); const youtube = tab.dataset.source === 'youtube'; show('#youtubeBox', youtube); show('#dropzone', !youtube && !selectedFile); }));
+$('#previewButton').addEventListener('click', () => { if ($('#resultPlayer').src) $('#resultPlayer').play(); else setNotice('Convert audio terlebih dahulu untuk preview.', 'error'); });
+document.addEventListener('keydown', (event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); fileInput.click(); } });
+const callback = new URLSearchParams(window.location.search);
+loadHistory();
+
+const legacySidebar = document.querySelector('.legacy-sidebar');
+const legacyCollapse = document.querySelector('.legacy-collapse');
+legacyCollapse?.addEventListener('click', () => legacySidebar.classList.toggle('is-collapsed'));
+
+const legacyPages = {
+	payments: ['PAYMENTS', 'Payment History', 'Monitor your transaction history.', '<div class="legacy-stat"><span>Total transactions</span><strong>0</strong></div><div class="legacy-table"><b>INVOICE</b><b>PACKAGE</b><b>AMOUNT</b><b>STATUS</b><b>DATE</b><p>No payment transactions yet.</p></div>'],
+	uploader: ['ROBLOX', 'BMK Uploader', 'Upload approved audio directly to your Roblox account.', '<div class="legacy-feature"><strong>Connect Roblox Account</strong><p>Use official Roblox OAuth. Your password never touches this app.</p><button class="legacy-primary" onclick="window.location.href=\'/auth/roblox\'">Connect Roblox</button></div>'],
+	'developer-api': ['API', 'Developer API', 'Build secure audio workflows with server-side API access.', '<div class="legacy-api-grid"><div><span>API STATUS</span><strong class="green">● ACTIVE</strong></div><div><span>API CREDITS</span><strong>0</strong></div></div><div class="legacy-code">POST /api/audio/convert<br>POST /api/roblox/upload<br>GET /api/audio/history</div>'],
+	'b2b-api': ['API', 'B2B API', 'Professional audio automation for creator teams.', '<div class="legacy-feature"><strong>REST API workspace</strong><p>Manage API key, credits, usage, and request statistics from one place.</p><button class="legacy-primary">Open API Documentation ↗</button></div>'],
+	profile: ['ACCOUNT', 'Profile', 'Manage your Rival Dev creator identity.', '<div class="legacy-feature"><div class="legacy-avatar">R</div><strong>Rivalid</strong><p>Roblox creator · Connected account status is managed through OAuth.</p><button class="legacy-primary">Edit profile</button></div>'],
+	settings: ['ACCOUNT', 'Settings', 'Control workspace preferences and integrations.', '<div class="legacy-settings"><label>Email notifications <input type="checkbox" checked></label><label>Auto optimize audio <input type="checkbox" checked></label><label>Compact history <input type="checkbox"></label></div>'],
+	converter: ['TOOLS', 'Audio Converter', 'Convert and optimize audio for Roblox.', '']
+};
+function renderLegacyRoute() {
+	const key = new URLSearchParams(window.location.search).get('page') || 'converter';
+	const view = document.querySelector('#legacyRouteView');
+	const main = document.querySelector('main');
+	const page = legacyPages[key] || legacyPages.converter;
+	document.querySelectorAll('.legacy-nav a').forEach((link) => link.classList.toggle('legacy-active', link.dataset.page === key));
+	if (key === 'converter') { view.hidden = true; main.hidden = false; return; }
+	main.hidden = true; view.hidden = false;
+	view.innerHTML = `<div class="legacy-route-head"><div><small>${page[0]}</small><h1>${page[1]}</h1><p>${page[2]}</p></div><span>RIVAL DEV / WORKSPACE</span></div><div class="legacy-route-card">${page[3]}</div>`;
+}
+document.querySelectorAll('.legacy-nav a[data-page]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); history.pushState({}, '', link.href); renderLegacyRoute(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+window.addEventListener('popstate', renderLegacyRoute);
+renderLegacyRoute();
+
+const legacyLogin = document.querySelector('#legacyLogin');
+const legacyGoogleLogin = document.querySelector('#legacyGoogleLogin');
+fetch('/api/auth/me', { credentials: 'same-origin' }).then((response) => { if (!response.ok) legacyLogin.hidden = false; });
+legacyGoogleLogin?.addEventListener('click', () => { window.location.href = '/auth/google'; });
+fetch('/api/auth/config').then((response) => response.json()).then((config) => { if (!config.googleConfigured && legacyGoogleLogin) { legacyGoogleLogin.disabled = true; legacyGoogleLogin.innerHTML = '<b>G</b> Configure Google OAuth first <span>!</span>'; } }).catch(() => {});

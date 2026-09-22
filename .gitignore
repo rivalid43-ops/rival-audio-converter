@@ -1,0 +1,6 @@
+node_modules/
+.env
+uploads/
+converted/
+client/dist/
+.DS_Store

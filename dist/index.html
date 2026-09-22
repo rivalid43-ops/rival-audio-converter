@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Konverter audio lokal untuk aset Roblox. Potong, normalisasi, preview, dan ekspor WAV.">
+  <title>RIVAL / Audio Converter</title>
+  <link rel="stylesheet" crossorigin href="/assets/index-B3tAEzyl.css">
+</head>
+<body>
+  <section id="legacyLogin" class="legacy-login" hidden>
+    <div class="legacy-login-card"><a class="legacy-brand" href="#top"><span class="legacy-brand-icon">ϟ</span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></a><div class="legacy-login-mark">♫</div><small class="legacy-eyebrow">AUDIO WORKSPACE</small><h1>Make your sound<br><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button id="legacyGoogleLogin" class="legacy-google-login"><b>G</b> Continue with Google <span>↗</span></button><small class="legacy-login-note">Google OAuth resmi. Password tidak pernah disimpan oleh Rival Dev.</small></div>
+  </section>
+  <aside class="legacy-sidebar" aria-label="Rival Dev navigation">
+    <a class="legacy-brand" href="#top"><span class="legacy-brand-icon">ϟ</span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></a>
+    <div class="legacy-nav">
+      <p>ROBLOX</p><a data-page="payments" href="?page=payments"><span>▣</span> Payment History</a>
+      <p>TOOLS</p><a class="legacy-active" data-page="converter" href="?page=converter"><span>♫</span> Audio Converter<i></i></a><a data-page="uploader" href="?page=uploader"><span>▣</span> BMK Uploader</a>
+      <p>API</p><a data-page="developer-api" href="?page=developer-api"><span>&lt;/&gt;</span> Developer API</a><a data-page="b2b-api" href="?page=b2b-api"><span>▣</span> B2B API</a>
+      <p>ACCOUNT</p><a data-page="profile" href="?page=profile"><span>♙</span> Profile</a><a data-page="settings" href="?page=settings"><span>⚙</span> Settings</a><a data-page="logout" href="?page=logout"><span>⇥</span> Logout</a>
+    </div>
+    <div class="legacy-premium"><strong>♛ Upgrade to Premium</strong><p>Unlock unlimited audio converter, and many benefits!</p><button>♛ Upgrade Now</button></div>
+    <button class="legacy-collapse" type="button">◧ <span>Collapse Sidebar</span></button>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><a class="brand" href="#top"><span class="brand-mark">R</span><span>RIVAL<span class="brand-dot">.</span>TOOLS</span></a><nav><a class="nav-active" href="#converter">Converter</a><a href="#history">History</a><button id="connectButton" class="connect-button">Connect Roblox</button></nav></header>
+    <main id="top">
+      <section class="hero"><div><p class="eyebrow">CREATOR TOOLKIT / 01</p><h1>Audio yang siap<br><em>dimainkan.</em></h1><p class="hero-description">Convert, preview, dan upload sound asset ke Roblox dari satu workspace yang tenang.</p></div><div class="hero-stat"><strong id="sessionStatus">LOCAL MODE</strong><span>File tetap di server kamu<br>sampai kamu mengunduhnya.</span></div></section>
+      <section id="converter" class="dashboard-grid">
+        <aside class="sidebar"><p class="side-label">WORKSPACE</p><a class="side-link active" href="#converter"><span>01</span><b>Audio Converter</b></a><a class="side-link" href="#history"><span>02</span><b>Upload history</b></a><div class="sidebar-tip"><i></i><p>Gunakan audio yang kamu miliki hak untuk mengunggahnya.</p></div></aside>
+        <div class="editor">
+          <div class="editor-header"><div><p class="section-kicker">AUDIO CONVERTER</p><h2>Prepare an audio asset</h2></div><span class="server-pill"><i></i> SERVER READY</span></div>
+          <div class="source-tabs"><button class="tab active" data-source="file">Upload file</button><button class="tab" data-source="youtube">YouTube URL</button></div>
+          <div class="dropzone" id="dropzone" tabindex="0" role="button"><input id="fileInput" type="file" accept="audio/*" hidden><div class="upload-symbol">↑</div><div><strong id="dropTitle">Drop an audio file</strong><span id="dropSub">MP3, WAV, OGG, M4A, FLAC up to 100 MB</span></div><kbd>CTRL + O</kbd></div>
+          <div id="youtubeBox" class="youtube-box hidden"><input id="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..."/><button id="validateYoutube" class="secondary-button">Validate URL</button><small id="youtubeMessage">Kami tidak mengunduh YouTube. Upload file yang haknya kamu miliki.</small></div>
+          <div class="file-summary hidden" id="fileSummary"><div class="file-icon">♫</div><div><strong id="fileTitle">No file</strong><span id="fileMeta">-</span></div><button id="removeFile" class="icon-button" aria-label="Remove file">×</button></div>
+          <div class="conversion-card"><div class="card-heading"><div><p class="section-kicker">OUTPUT SETTINGS</p><h3>Choose your delivery format</h3></div><span class="roblox-badge">ROBLOX READY</span></div><div class="options-grid"><label>FORMAT<select id="format"><option value="mp3">MP3</option><option value="wav">WAV</option><option value="ogg">OGG</option></select></label><label>QUALITY<select id="quality"><option value="128">128 kbps</option><option value="192" selected>192 kbps</option><option value="320">320 kbps</option></select></label></div><div class="quality-note"><span>◎</span> 48 kHz stereo output · Best compatibility for Roblox</div></div>
+          <div class="progress-wrap hidden" id="progressWrap"><div><span id="progressLabel">Converting audio...</span><strong id="progressValue">0%</strong></div><div class="progress"><i id="progressBar"></i></div></div>
+          <div class="action-bar"><button class="preview-button" id="previewButton" disabled>▶ Preview</button><button class="export-button" id="convertButton" disabled><span>Convert Audio</span><b>↗</b></button></div>
+          <div class="result-card hidden" id="resultCard"><div class="result-head"><div><p class="section-kicker">CONVERSION COMPLETE</p><h3 id="resultName">audio.mp3</h3></div><span class="success-badge">READY</span></div><audio id="resultPlayer" controls></audio><div class="result-actions"><a id="downloadButton" class="download-button" href="#">↓ Download</a><button id="uploadButton" class="roblox-button">◈ Upload to Roblox</button><button id="copyAssetButton" class="secondary-button hidden">Copy Asset ID</button></div><p id="uploadStatus" class="upload-status"></p></div>
+          <p class="privacy-note"><span>●</span> Conversion memakai FFmpeg di backend kamu. Token Roblox tidak pernah berada di frontend.</p>
+        </div>
+      </section>
+      <section id="history" class="history-section"><div class="section-heading"><div><p class="section-kicker">RECENT ACTIVITY</p><h2>Upload history</h2></div><span>SESSION ONLY</span></div><div id="historyList" class="history-list"><p class="empty-state">Belum ada audio yang di-upload ke Roblox.</p></div></section>
+    </main><section id="legacyRouteView" class="legacy-route-view" hidden></section><footer><span>RIVAL / AUDIO CONVERTER</span><span>BUILT FOR CREATORS · 2026</span></footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
