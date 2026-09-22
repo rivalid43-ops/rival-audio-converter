@@ -28,7 +28,8 @@ function isMediaFile(file) { return Boolean(file && (file.type.startsWith('audio
 function LegacyRemixPage() {
   const location = useLocation();
   const routerNavigate = useNavigate();
-  const page = location.pathname.slice(1) || 'dashboard';
+  const page = location.pathname.slice(1) || 'dashboard'; 
+  const [refreshHistory, setRefreshHistory] = useState(() => () => {});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [session, setSession] = useState({ connected: false, name: 'Rivalid', userId: '—' });
@@ -147,6 +148,12 @@ function App() {
 
   const openPayment = (plan = null) => { setSelectedPlan(plan); setPaymentOpen(true); };
   const navigate = (next) => { routerNavigate(`/${next}`); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const refreshHistory = async () => {
+    const response = await fetch('/api/session', { credentials: 'include' });
+    if (!response.ok) throw new Error('History tidak dapat dimuat.');
+    const data = await response.json();
+    setHistory((data.history || []).map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() })));
+  };
   const convert = async (format, quality) => {
     if (!file) return setNotice('Pilih file musik atau video terlebih dahulu.');
     setBusy(true); setNotice('Converting audio...');
@@ -162,7 +169,7 @@ function App() {
 
   if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
   if (!authUser) return <LoginScreen />;
-  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} openPayment={openPayment} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} /></>;
+  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} refreshHistory={refreshHistory} openPayment={openPayment} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} /></>;
 }
 
 function LoginScreen() { const [configured, setConfigured] = useState(null); useEffect(() => { fetch('/api/auth/config').then((res) => res.json()).then((data) => setConfigured(data.googleConfigured)).catch(() => setConfigured(false)); }, []); return <main className="login-screen"><div className="login-grid"></div><section className="login-card"><div className="login-brand"><span className="brand-icon"><Zap size={18} fill="currentColor" /></span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></div><div className="login-icon"><Music2 size={23} /></div><span className="eyebrow">AUDIO WORKSPACE</span><h1>Make your sound<br /><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button className="google-button" onClick={() => { window.location.href = '/auth/google'; }}><span>G</span>{configured === false ? 'Configure Google OAuth' : 'Continue with Google'}<ArrowUpRight size={16} /></button>{configured === false && <small className="login-setup-warning">Backend belum membaca konfigurasi Google. Restart server setelah mengisi `.env`.</small>}<small className="login-legal">By continuing, you agree to use audio you have permission to process.</small></section><div className="login-side-note"><span>01</span><strong>CREATE / CONVERT / PUBLISH</strong><p>A quieter workspace for serious Roblox creators.</p></div></main>; }

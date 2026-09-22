@@ -2,6 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
 const multer = require('multer');
+const ffmpegStatic = require('ffmpeg-static');
 const dotenv = require('dotenv');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -29,7 +30,7 @@ const effectiveSessionSecret = hasConfiguredSessionSecret ? configuredSessionSec
 app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
-const ffmpegCommand = String(process.env.FFMPEG_PATH || 'ffmpeg').trim();
+const ffmpegCommand = String(process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg').trim();
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(outputDir, { recursive: true });
 app.use(express.json({ limit: '1mb' }));

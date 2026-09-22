@@ -1,5 +1,6 @@
 [phases.setup]
 aptPkgs = ["ffmpeg"]
+nixPkgs = ["ffmpeg"]
 
 [phases.build]
 cmds = ["ffmpeg -version"]
