@@ -8,7 +8,7 @@
     "start": "node server.js",
     "dev": "concurrently \"npm:dev:api\" \"npm:dev:client\"",
     "dev:api": "node --watch server.js",
-    "dev:client": "vite --host localhost --config client/vite.config.js",
+    "dev:client": "vite --host 0.0.0.0 --config client/vite.config.js",
     "build": "vite build --config client/vite.config.js",
     "check": "node --check server.js && vite build --config client/vite.config.js"
   },

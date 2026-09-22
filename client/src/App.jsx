@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import paymentQr from '../qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg';
+import './metric-icons.css';
 import {
   Activity, ArrowDownToLine, ArrowUpRight, Bell, BookOpen, Check, ChevronRight, CircleHelp, CloudUpload,
   Code2, Copy, CreditCard, Download, FileAudio, Gauge, History, KeyRound, LayoutDashboard, Library, Link2, LockKeyhole, Menu,
@@ -10,10 +11,10 @@ import {
 
 const navGroups = [
   { label: 'MAIN', items: [['Dashboard', 'dashboard', LayoutDashboard]] },
-  { label: 'ROBLOX', items: [['Roblox Audio', 'roblox-audio', Music2], ['Audio Library', 'library', Library], ['Roblox Uploader', 'uploader', CloudUpload], ['Upload History', 'history', History]] },
-  { label: 'TOOLS', items: [['Audio Converter', 'converter', WandSparkles], ['Remix Musik', 'remix', Music2], ['YouTube Audio Converter', 'youtube', Youtube], ['Audio Optimizer', 'optimizer', Gauge], ['File Converter', 'file-converter', FileAudio]] },
-  { label: 'API', items: [['B2B API', 'b2b-api', Code2], ['Developer API', 'developer-api', KeyRound], ['API Documentation', 'api-docs', BookOpen]] },
-  { label: 'ACCOUNT', items: [['Payment History', 'payments', CreditCard], ['Credits', 'credits', Zap], ['Billing', 'billing', CreditCard], ['Profile', 'profile', UserRound], ['Settings', 'settings', Settings]] }
+  { label: 'ROBLOX', items: [['Payment History', 'payments', CreditCard], ['Roblox Audio', 'roblox-audio', Music2], ['Audio Library', 'library', Library], ['Upload History', 'history', History]] },
+  { label: 'TOOLS', items: [['Audio Converter', 'converter', WandSparkles], ['BMK Uploader', 'uploader', CloudUpload], ['Remix Musik', 'remix', Music2], ['YouTube Audio Converter', 'youtube', Youtube], ['Audio Optimizer', 'optimizer', Gauge]] },
+  { label: 'API', items: [['Roblox API', 'roblox-api', KeyRound], ['Developer API', 'developer-api', Code2], ['B2B API', 'b2b-api', BookOpen]] },
+  { label: 'ACCOUNT', items: [['Profile', 'profile', UserRound], ['Settings', 'settings', Settings]] }
 ];
 const recentUploads = [
   { name: 'space-radio.mp3', format: 'MP3', duration: '02:41', status: 'SUCCESS', id: '1847302958', date: 'Today, 10:42' },
@@ -103,7 +104,13 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState(null);
+  const [paymentOrders, setPaymentOrders] = useState([]);
+  const [orderStatus, setOrderStatus] = useState(null);
+  const [chatRoom, setChatRoom] = useState({ orderId: '', messages: [] });
+  const [chatInput, setChatInput] = useState('');
+  const [proofFile, setProofFile] = useState(null);
   const [online, setOnline] = useState(0);
+  const [robloxApi, setRobloxApi] = useState({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
 
   useEffect(() => {
     const sendPresence = () => fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorIdRef.current }) }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.online !== undefined) setOnline(data.online); }).catch(() => {});
@@ -142,11 +149,52 @@ function App() {
 
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));
-    fetch('/api/auth/roblox/me', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.user) setSession({ connected: true, name: data.user.displayName, userId: data.user.id, username: data.user.username }); }).catch(() => {});
+    fetch('/api/roblox-api/session', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.connected) setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' }); else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' }); }).catch(() => setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' }));
     fetch('/api/session', { credentials: 'include' }).then((res) => res.json()).then((data) => { if (data.history?.length) setHistory(data.history.map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() }))); }).catch(() => {});
   }, []);
 
   const openPayment = (plan = null) => { setSelectedPlan(plan); setPaymentOpen(true); };
+  const createPaymentOrder = async () => {
+    if (!selectedPlan) return;
+    const response = await fetch('/api/payments/create', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: selectedPlan, customerName: authUser?.name || 'Customer', customerEmail: authUser?.email || 'customer@example.com' }) });
+    const order = await response.json();
+    if (!response.ok) { setNotice(order.error || 'Gagal membuat order pembayaran.'); return; }
+    setOrderStatus(order);
+    setPaymentOrders((current) => [order, ...current]);
+  };
+  const uploadProof = async () => {
+    if (!orderStatus || !proofFile) return setNotice('Upload bukti transfer terlebih dahulu.');
+    const form = new FormData();
+    form.append('proof', proofFile);
+    form.append('notes', 'Bukti transfer dari customer');
+    const response = await fetch(`/api/payments/${orderStatus.id}/proof`, { method: 'POST', credentials: 'include', body: form });
+    const payload = await response.json();
+    if (!response.ok) { setNotice(payload.error || 'Gagal upload bukti.'); return; }
+    setOrderStatus(payload.order);
+    setNotice('Bukti pembayaran berhasil dikirim untuk verifikasi.');
+    setProofFile(null);
+  };
+  const approvePayment = async (status = 'approved') => {
+    if (!orderStatus) return;
+    const response = await fetch(`/api/payments/${orderStatus.id}/status`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, adminNotes: status === 'approved' ? 'Pembayaran diterima.' : 'Pembayaran ditolak.' }) });
+    const payload = await response.json();
+    if (!response.ok) { setNotice(payload.error || 'Status pembayaran gagal diubah.'); return; }
+    setOrderStatus(payload.order);
+    setNotice(status === 'approved' ? 'Pembayaran disetujui.' : 'Pembayaran ditolak.');
+  };
+  const loadChat = async (orderId) => {
+    const response = await fetch(`/api/chats/${orderId}`, { credentials: 'include' });
+    const data = await response.json();
+    setChatRoom(data);
+  };
+  const sendChat = async () => {
+    if (!chatRoom.orderId || !chatInput.trim()) return;
+    const response = await fetch(`/api/chats/${chatRoom.orderId}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sender: authUser?.name || 'Customer', text: chatInput.trim() }) });
+    const payload = await response.json();
+    if (!response.ok) { setNotice(payload.error || 'Chat gagal dikirim.'); return; }
+    setChatRoom(payload.room);
+    setChatInput('');
+  };
   const navigate = (next) => { routerNavigate(`/${next}`); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   const refreshHistory = async () => {
     const response = await fetch('/api/session', { credentials: 'include' });
@@ -162,14 +210,49 @@ function App() {
   };
   const upload = async () => {
     if (!result) return setNotice('Convert audio dahulu.');
-    if (!session.connected) return setNotice('Silakan login dengan Roblox terlebih dahulu.');
-    setBusy(true); setNotice('Uploading...');
-    try { const blob = await fetch(result.downloadUrl).then((res) => res.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('description', 'Uploaded from Rival Audio Converter'); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form }); const payload = await response.json(); if (!response.ok || payload.success !== true) throw new Error(payload.message || payload.error || 'Roblox sedang memproses asset.'); setResult((current) => ({ ...current, assetId: payload.assetId })); setNotice(`Upload Successful · Asset ID ${payload.assetId}`); setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'PROCESSING', id: payload.assetId, date: 'Just now' }, ...items]); } catch (error) { setNotice(error.message || 'Upload failed.'); } finally { setBusy(false); }
+    if (!robloxApi.connected) return setNotice('Connect Roblox API terlebih dahulu.');
+    setBusy(true);
+    setNotice('Uploading to Roblox...');
+    try {
+      const blob = await fetch(result.downloadUrl).then((res) => res.blob());
+      const form = new FormData();
+      form.append('audio', blob, result.name);
+      form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
+      form.append('description', 'Uploaded from Rival Audio Converter');
+      const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form });
+      const payload = await response.json();
+      if (!response.ok || payload.success !== true) {
+        const message = String(payload.error || payload.message || 'Roblox sedang memproses asset.');
+        if (/moderation|rejected|failed/i.test(message)) {
+          throw new Error('Upload rejected by Roblox moderation.');
+        }
+        if (/processing|still processing/i.test(message)) {
+          throw new Error('Roblox is still processing your upload.');
+        }
+        throw new Error(message);
+      }
+      setResult((current) => ({ ...current, assetId: payload.assetId }));
+      setNotice(`Upload Successful · Roblox accepted the asset. Asset ID ${payload.assetId}`);
+      setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'PROCESSING', id: payload.assetId, date: 'Just now' }, ...items]);
+    } catch (error) {
+      const message = String(error.message || 'Upload failed.');
+      if (/rejected by Roblox moderation|moderation failed/i.test(message)) {
+        setNotice('Upload not accepted by Roblox moderation.');
+      } else if (/still processing/i.test(message)) {
+        setNotice('Roblox is still processing your upload.');
+      } else if (/invalid roblox api key/i.test(message)) {
+        setNotice('Invalid Roblox API Key.');
+      } else {
+        setNotice(message);
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
   if (!authUser) return <LoginScreen />;
-  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} refreshHistory={refreshHistory} openPayment={openPayment} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} /></>;
+  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} refreshHistory={refreshHistory} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} paymentOrders={paymentOrders} setPaymentOrders={setPaymentOrders} orderStatus={orderStatus} setOrderStatus={setOrderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} approvePayment={approvePayment} chatRoom={chatRoom} setChatRoom={setChatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} proofFile={proofFile} setProofFile={setProofFile} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} orderStatus={orderStatus} setPaymentOpen={setPaymentOpen} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} /></>;
 }
 
 function LoginScreen() { const [configured, setConfigured] = useState(null); useEffect(() => { fetch('/api/auth/config').then((res) => res.json()).then((data) => setConfigured(data.googleConfigured)).catch(() => setConfigured(false)); }, []); return <main className="login-screen"><div className="login-grid"></div><section className="login-card"><div className="login-brand"><span className="brand-icon"><Zap size={18} fill="currentColor" /></span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></div><div className="login-icon"><Music2 size={23} /></div><span className="eyebrow">AUDIO WORKSPACE</span><h1>Make your sound<br /><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button className="google-button" onClick={() => { window.location.href = '/auth/google'; }}><span>G</span>{configured === false ? 'Configure Google OAuth' : 'Continue with Google'}<ArrowUpRight size={16} /></button>{configured === false && <small className="login-setup-warning">Backend belum membaca konfigurasi Google. Restart server setelah mengisi `.env`.</small>}<small className="login-legal">By continuing, you agree to use audio you have permission to process.</small></section><div className="login-side-note"><span>01</span><strong>CREATE / CONVERT / PUBLISH</strong><p>A quieter workspace for serious Roblox creators.</p></div></main>; }
@@ -258,15 +341,15 @@ function RemixPage() {
   </section>;
 }
 
-function PageView(props) { const { page } = props; if (page === 'dashboard') return <Dashboard navigate={props.navigate} history={props.history} />; if (page === 'remix') return <RemixPage />; if (page === 'converter') return <Converter {...props} />; if (page === 'youtube') return <YoutubePage navigate={props.navigate} />; if (page === 'uploader') return <Uploader {...props} />; if (page === 'library' || page === 'roblox-audio') return <LibraryPage history={props.history} />; if (page === 'history') return <HistoryPage history={props.history} />; if (page === 'optimizer') return <UtilityPage title="Audio Optimizer" icon={Gauge} description="Normalize, trim, and polish your audio before conversion." navigate={props.navigate} />; if (page === 'file-converter') return <UtilityPage title="File Converter" icon={FileAudio} description="Convert media files with the same secure processing pipeline." navigate={props.navigate} />; if (page === 'b2b-api') return <B2bApi navigate={props.navigate} />; if (page === 'developer-api') return <DeveloperApi navigate={props.navigate} />; if (page === 'api-docs') return <ApiDocs />; if (page === 'payments') return <PaymentHistory />; if (page === 'credits') return <CreditsPage navigate={props.navigate} />; if (page === 'billing') return <BillingPage openPayment={props.openPayment} />; if (page === 'profile') return <Profile session={props.session} />; return <WorkspaceSettingsPage session={props.session} setCredits={props.setCredits} />; }
+function PageView(props) { const { page } = props; if (page === 'dashboard') return <Dashboard navigate={props.navigate} history={props.history} />; if (page === 'remix') return <RemixPage />; if (page === 'converter') return <Converter {...props} />; if (page === 'youtube') return <YoutubePage navigate={props.navigate} />; if (page === 'uploader') return <Uploader {...props} />; if (page === 'library' || page === 'roblox-audio') return <LibraryPage history={props.history} />; if (page === 'history') return <HistoryPage history={props.history} />; if (page === 'optimizer') return <UtilityPage title="Audio Optimizer" icon={Gauge} description="Normalize, trim, and polish your audio before conversion." navigate={props.navigate} />; if (page === 'file-converter') return <UtilityPage title="File Converter" icon={FileAudio} description="Convert media files with the same secure processing pipeline." navigate={props.navigate} />; if (page === 'roblox-api') return <RobloxApiPage {...props} />; if (page === 'b2b-api') return <B2bApi navigate={props.navigate} />; if (page === 'developer-api') return <DeveloperApi navigate={props.navigate} />; if (page === 'api-docs') return <ApiDocs />; if (page === 'payments') return <PaymentHistory />; if (page === 'credits') return <CreditsPage navigate={props.navigate} />; if (page === 'billing') return <BillingPage openPayment={props.openPayment} />; if (page === 'profile') return <Profile session={props.session} />; return <WorkspaceSettingsPage session={props.session} setCredits={props.setCredits} />; }
 
 function Dashboard({ navigate, history }) { return <><div className="metric-grid"><Metric icon={Zap} label="Credits" value="0" sub="Buy credits to convert" accent="lime" /><Metric icon={Music2} label="Audio uploads" value="0" sub="No uploads yet" accent="blue" /><Metric icon={WandSparkles} label="Converted" value="0" sub="Start your first conversion" accent="orange" /><Metric icon={CloudUpload} label="Roblox assets" value={history.filter((item) => item.status === 'SUCCESS').length} sub="Verified asset IDs only" accent="purple" /></div><div className="dashboard-columns"><section className="panel welcome-panel"><div><span className="eyebrow">CREATOR CONTROL CENTER</span><h2>Make your sound<br /><em>stand out.</em></h2><p>Prepare game-ready audio with a fast, focused workflow built for Roblox creators.</p><button className="primary-button" onClick={() => navigate('converter')}>Open converter <ArrowUpRight size={16} /></button></div><div className="welcome-orb"><WandSparkles size={50} /></div></section><section className="panel mini-panel"><div className="panel-title"><div><span className="eyebrow">QUICK ACTIONS</span><h3>Start a workflow</h3></div></div><div className="quick-actions"><button onClick={() => navigate('converter')}><WandSparkles size={16} /> Audio Converter <ArrowUpRight size={14} /></button><button onClick={() => navigate('uploader')}><CloudUpload size={16} /> Roblox Uploader <ArrowUpRight size={14} /></button><button onClick={() => navigate('youtube')}><Youtube size={16} /> YouTube Audio <ArrowUpRight size={14} /></button><button onClick={() => navigate('developer-api')}><Code2 size={16} /> Developer API <ArrowUpRight size={14} /></button></div></section></div></>; }
 function Metric({ icon: Icon, label, value, sub, accent }) { return <div className={cn('metric-card', `metric-${accent}`)}><div className="metric-icon"><Icon size={17} /></div><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>; }
 function Converter({ file, setFile, result, busy, notice, convert, upload, navigate }) { const [format, setFormat] = useState('mp3'); const [quality, setQuality] = useState('192'); return <><div className="converter-topline"><div className="credits-card"><span>AVAILABLE CREDITS</span><strong>0 <small>CREDITS</small></strong><button onClick={() => navigate('settings')}>Buy Credits <ArrowUpRight size={13} /></button></div><div className="plan-card"><div><span>PLAN STATUS</span><strong>Free plan</strong></div><div className="plan-progress"><i></i></div><small>0 / 3 monthly conversions</small></div></div><div className="converter-layout"><section className="panel converter-panel"><div className="panel-heading"><div><span className="eyebrow">STEP 01 · IMPORT</span><h2>Bring your audio to life</h2></div><span className="safe-badge"><LockKeyhole size={12} /> PRIVATE</span></div><FileDrop file={file} setFile={setFile} /><div className="youtube-import"><div className="import-title"><Youtube size={17} /><div><strong>Import from YouTube</strong><small>Only use content you have permission to use.</small></div></div><div className="youtube-row"><input placeholder="YouTube URL" /><button className="secondary-button" onClick={() => navigate('youtube')}>Import Audio <Link2 size={14} /></button></div></div></section><section className="panel settings-panel"><div className="panel-heading"><div><span className="eyebrow">STEP 02 · OPTIMIZE</span><h2>Output settings</h2></div><WandSparkles size={18} color="#c8f76e" /></div><label className="field-label">OUTPUT FORMAT<select value={format} onChange={(event) => setFormat(event.target.value)}><option value="mp3">MP3</option><option value="wav">WAV</option><option value="ogg">OGG</option></select></label><div className="field-label">AUDIO QUALITY<div className="quality-options">{['128', '192', '320'].map((item) => <button key={item} className={cn(quality === item && 'selected')} onClick={() => setQuality(item)}>{item} <small>kbps</small></button>)}</div></div><div className="settings-foot"><span><Check size={14} /> 48 kHz stereo</span><span>Roblox optimized</span></div><button className="convert-button" disabled={!file || busy} onClick={() => convert(format, quality)}>{busy ? <RefreshCw className="spin" size={17} /> : <Zap size={17} />} {busy ? 'Converting audio...' : 'Convert Audio'} <ArrowUpRight size={17} /></button></section></div>{notice && <div className={cn('notice-bar', notice.includes('failed') || notice.includes('Pilih') || notice.includes('terlebih') ? 'notice-error' : 'notice-success')}><Activity size={16} /> {notice}</div>}{result && <ResultCard result={result} upload={upload} />}</>; }
 function FileDrop({ file, setFile }) { const onFile = (next) => isMediaFile(next) && setFile(next); return file ? <div className="file-preview"><div className="file-art"><FileAudio size={22} /></div><div><strong>{file.name}</strong><span>{formatBytes(file.size)} · {file.type || 'media'}</span></div><audio controls src={URL.createObjectURL(file)} /><button className="icon-action" onClick={() => setFile(null)}><X size={16} /></button></div> : <label className="drop-area" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); onFile(event.dataTransfer.files[0]); }}><input type="file" accept="audio/*,video/*" onChange={(event) => onFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>Drop your music or video here</strong><span>Video akan otomatis diambil audionya</span><small>MP3 / WAV / OGG / FLAC / MP4 / MOV</small></label>; }
-function ResultCard({ result, upload }) { const [copied, setCopied] = useState(false); const copy = () => { if (result.assetId) navigator.clipboard.writeText(result.assetId); setCopied(true); setTimeout(() => setCopied(false), 1300); }; return <section className="panel result-panel"><div className="panel-heading"><div><span className="eyebrow">STEP 03 · COMPLETE</span><h2>Conversion Complete</h2></div><span className="success-label"><Check size={13} /> READY</span></div><div className="result-file"><div className="file-art"><Music2 size={21} /></div><div><strong>{result.name}</strong><span>{(result.format || '').toUpperCase()} · {formatBytes(result.size)}</span></div><audio controls src={result.downloadUrl} /></div><div className="result-actions"><a className="download-button" href={result.downloadUrl} download><ArrowDownToLine size={16} /> Download Audio</a><button className="roblox-button" onClick={upload}><CloudUpload size={16} /> Upload to Roblox</button>{result.assetId && <><button className="secondary-button" onClick={copy}>{copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy Asset ID'}</button><a className="secondary-button" href={`https://create.roblox.com/dashboard/creations/store/${result.assetId}/overview`} target="_blank" rel="noreferrer">Open in Roblox <ArrowUpRight size={14} /></a></>}</div></section>; }
+function ResultCard({ result, upload, robloxApi }) { const [copied, setCopied] = useState(false); const copy = () => { if (result.assetId) navigator.clipboard.writeText(String(result.assetId)); setCopied(true); setTimeout(() => setCopied(false), 1300); }; return <section className="panel result-panel"><div className="panel-heading"><div><span className="eyebrow">STEP 03 · COMPLETE</span><h2>Conversion Complete</h2></div><span className="success-label"><Check size={13} /> READY</span></div><div className="result-file"><div className="file-art"><Music2 size={21} /></div><div><strong>{result.name}</strong><span>{(result.format || '').toUpperCase()} · {formatBytes(result.size)}</span></div><audio controls src={result.downloadUrl} /></div><div className="result-actions"><a className="download-button" href={result.downloadUrl} download><ArrowDownToLine size={16} /> Download Audio</a>{robloxApi.connected ? <button className="roblox-button" onClick={upload}><CloudUpload size={16} /> Upload to Roblox</button> : <button className="roblox-button" onClick={() => window.location.hash = '#/roblox-api'}>Connect Roblox API</button>}{result.assetId && <><button className="secondary-button" onClick={copy}>{copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy Asset ID'}</button><a className="secondary-button" href={`https://create.roblox.com/dashboard/creations/store/${result.assetId}/overview`} target="_blank" rel="noreferrer">Open Asset <ArrowUpRight size={14} /></a></>}</div></section>; }
 function YoutubePage({ navigate }) { const [url, setUrl] = useState(''); const [message, setMessage] = useState(''); const validate = async () => { const res = await fetch('/api/youtube/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }); const data = await res.json(); setMessage(data.message || data.error); }; return <section className="panel standalone-panel youtube-page"><div className="youtube-hero"><div className="youtube-large-icon"><Youtube size={32} /></div><div><span className="eyebrow">RIGHTS-AWARE IMPORT</span><h2>Bring a permitted source into your workflow.</h2><p>We validate YouTube links only. This app never downloads DRM-protected or restricted content. Upload an audio file you are licensed to use.</p></div></div><div className="large-input-row"><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://www.youtube.com/watch?v=..." /><button className="primary-button" onClick={validate}>Validate URL <Check size={16} /></button></div>{message && <div className="notice-bar notice-success"><Check size={16} /> {message}</div>}<button className="text-button back-button" onClick={() => navigate('converter')}>← Back to converter</button></section>; }
-function Uploader({ session, setSession }) { const connect = () => { const popup = window.open('/auth/roblox', 'robloxOAuth', 'popup,width=500,height=700'); if (!popup) window.location.href = '/auth/roblox'; }; const logout = async () => { await fetch('/api/auth/roblox/logout', { method: 'POST', credentials: 'same-origin' }); setSession({ connected: false, name: 'Rivalid', userId: '—' }); }; useEffect(() => { const receive = (event) => { if (event.origin !== window.location.origin || event.data?.type !== 'roblox-oauth') return; fetch('/api/auth/roblox/me', { credentials: 'same-origin' }).then((res) => res.json()).then((data) => { if (data.user) setSession({ connected: true, name: data.user.displayName, userId: data.user.id, username: data.user.username }); }); }; window.addEventListener('message', receive); return () => window.removeEventListener('message', receive); }, [setSession]); return <section className="panel standalone-panel uploader-page"><div className="uploader-icon"><CloudUpload size={28} /></div><span className="eyebrow">ROBLOX OPEN CLOUD</span><h2>Upload directly to Roblox</h2><p>Connect through official Roblox OAuth. Your password never touches this app, and tokens stay on the backend.</p>{session.connected ? <><div className="connected-box"><div className="avatar-large">R</div><div><strong>@{session.username || session.name}</strong><span>{session.name} · User ID {session.userId}</span></div><span className="connected-status"><i></i> Connected</span></div><button className="secondary-button" onClick={logout}>Logout Roblox</button></> : <button className="primary-button" onClick={connect}>Login with Roblox <ArrowUpRight size={16} /></button>}<div className="upload-steps"><Step number="01" label="Uploading" /><Step number="02" label="Processing" /><Step number="03" label="Moderation" /></div></section>; }
+function Uploader({ session, setSession }) { return <section className="panel standalone-panel uploader-page"><div className="uploader-icon"><CloudUpload size={28} /></div><span className="eyebrow">ROBLOX OPEN CLOUD</span><h2>Upload directly to Roblox</h2><p>Use your own Open Cloud API key. This app never asks for Roblox password, cookie, or .ROBLOSECURITY.</p><div className="notice-bar notice-success"><Check size={16} /> API-key based upload is enabled.</div><button className="primary-button" onClick={() => window.location.hash = '#/roblox-api'}>Connect Roblox API <ArrowUpRight size={16} /></button><div className="upload-steps"><Step number="01" label="Connect API" /><Step number="02" label="Upload audio" /><Step number="03" label="Moderation" /></div></section>; }
 function Step({ number, label }) { return <div><span>{number}</span><strong>{label}</strong></div>; }
 function LibraryPage({ history }) { const [query, setQuery] = useState(''); const [filter, setFilter] = useState('All'); const visible = history.filter((item) => item.name.toLowerCase().includes(query.toLowerCase()) && (filter === 'All' || item.status === filter.toUpperCase())); return <section className="panel standalone-panel library-panel"><div className="panel-title"><div><span className="eyebrow">YOUR ASSETS</span><h2>Audio Library</h2></div><button className="secondary-button"><Plus size={15} /> Add audio</button></div><div className="library-toolbar"><label className="search-box"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search audio files..." /></label><div className="filter-tabs">{['All', 'Uploaded', 'Processing', 'Failed'].map((item) => <button key={item} className={filter === item ? 'filter-active' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Format</th><th>Duration</th><th>Size</th><th>Roblox ID</th><th>Status</th><th>Date</th><th>Action</th></tr></thead><tbody>{visible.map((item) => <tr key={`${item.name}-${item.date}`}><td><FileAudio size={15} /> {item.name}</td><td>{item.format}</td><td>{item.duration}</td><td>—</td><td className="asset-id">{item.id}</td><td><Status status={item.status} /></td><td>{item.date}</td><td><div className="row-actions"><button title="Play"><Play size={14} /></button><button title="Copy ID"><Copy size={14} /></button><button title="Download"><Download size={14} /></button><button title="Delete"><Trash2 size={14} /></button></div></td></tr>)}</tbody></table></div></section>; }
 function HistoryPage({ history }) { return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ACTIVITY LOG</span><h2>Upload History</h2></div><button className="secondary-button"><RefreshCw size={15} /> Refresh</button></div><div className="table-wrap"><table><thead><tr><th>Audio</th><th>Type</th><th>Format</th><th>Status</th><th>Asset ID</th><th>Date</th><th>Action</th></tr></thead><tbody>{history.map((item) => <tr key={`${item.name}-${item.date}`}><td><FileAudio size={15} /> {item.name}</td><td>Roblox audio</td><td>{item.format}</td><td><Status status={item.status} /></td><td className="asset-id">{item.id}</td><td>{item.date}</td><td><button className="icon-action"><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></div></section>; }
@@ -282,17 +365,134 @@ function ApiStatusCard({ label = 'API STATUS' }) { return <div className="api-st
 function B2bApi({ navigate }) { return <><div className="api-grid"><ApiStatusCard label="B2B API STATUS" /><Metric icon={Zap} label="API credits" value="0" sub="Top up when billing is connected" accent="lime" /><Metric icon={Activity} label="Requests this month" value="0" sub="No requests yet" accent="blue" /></div><section className="panel api-panel"><div className="panel-title"><div><span className="eyebrow">B2B API</span><h2>Scale your audio workflow</h2></div><button className="secondary-button" onClick={() => navigate('api-docs')}><BookOpen size={15} /> API Documentation</button></div><ApiCredential /><UsageBars /><CodeExamples /></section></>; }
 function DeveloperApi({ navigate }) { return <section className="panel api-panel"><div className="panel-title"><div><span className="eyebrow">DEVELOPER API</span><h2>Keys, credits, and usage</h2></div><button className="secondary-button" onClick={() => navigate('api-docs')}><BookOpen size={15} /> Documentation</button></div><ApiStatusCard /><ApiCredential /><div className="developer-api-grid"><Metric icon={Zap} label="API credits" value="0" sub="Ready for top up" accent="lime" /><Metric icon={Activity} label="Requests" value="0" sub="Last 30 days" accent="blue" /></div><UsageBars /></section>; }
 function ApiCredential() { const [revealed, setRevealed] = useState(false); return <div className="api-credential"><div><span>SECRET API KEY</span><strong>{revealed ? 'rival_live_configure_on_server' : '••••••••••••••••••••••••'}</strong></div><div><button className="secondary-button" onClick={() => setRevealed(!revealed)}>{revealed ? 'Hide' : 'Reveal'}</button><button className="secondary-button">Regenerate</button></div></div>; }
+
+function RobloxApiPage({ robloxApi, setRobloxApi }) {
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const refreshStatus = async () => {
+    const response = await fetch('/api/roblox-api/session', { credentials: 'include' });
+    const data = await response.json();
+    if (data.connected) setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' });
+    else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
+  };
+
+  const connectApi = async () => {
+    if (!apiKey.trim()) { setError('Paste your Roblox API Key'); return; }
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch('/api/roblox-api/connect', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Invalid Roblox API Key');
+      setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: 'Connected' });
+      setMessage('Connected');
+      setApiKey('');
+    } catch (err) {
+      setError(err.message || 'Invalid Roblox API Key');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const testConnection = async () => {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch('/api/roblox-api/test', { method: 'POST', credentials: 'include' });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Invalid Roblox API Key');
+      setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: 'Connected' });
+      setMessage('Connected');
+    } catch (err) {
+      setError(err.message || 'Invalid Roblox API Key');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeApi = async () => {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch('/api/roblox-api/remove', { method: 'DELETE', credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to remove API key');
+      setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
+      setMessage('API key removed');
+    } catch (err) {
+      setError(err.message || 'Unable to remove API key');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="panel standalone-panel" style={{ maxWidth: 820, margin: '0 auto' }}>
+    <div className="panel-heading"><div><span className="eyebrow">ROBLOX API</span><h2>Connect Roblox API</h2></div><span className="success-label"><Check size={13} /> {robloxApi.connected ? 'CONNECTED' : 'NOT CONNECTED'}</span></div>
+    <div className="api-credential" style={{ marginBottom: 16 }}>
+      <div><span>STATUS</span><strong>{robloxApi.connected ? '● Connected' : '● NOT CONNECTED'}</strong></div>
+    </div>
+    <p style={{ color: '#d7dce5', marginBottom: 20 }}>Connect your Roblox account using your own Roblox Open Cloud API Key.</p>
+    <div className="detail-panel" style={{ padding: 18, borderRadius: 14, marginBottom: 20 }}>
+      <div className="panel-title"><div><span className="eyebrow">TUTORIAL</span><h3 style={{ margin: '8px 0 0' }}>Cara membuat Roblox API Key</h3></div><KeyRound size={21} color="#c8f76e" /></div>
+      <ol style={{ margin: '16px 0 0', paddingLeft: 22, color: '#d7dce5', lineHeight: 1.8 }}>
+        <li>Buka <a href="https://create.roblox.com/credentials" target="_blank" rel="noreferrer" style={{ color: '#c8f76e' }}>Roblox Creator Dashboard → Credentials</a>.</li>
+        <li>Klik <strong>Open Cloud API Keys</strong>, lalu pilih <strong>Create API Key</strong>.</li>
+        <li>Beri nama, misalnya <strong>Rival Audio Converter</strong>, dan pilih pengalaman atau universe milikmu.</li>
+        <li>Aktifkan izin <strong>Assets: Read</strong> dan <strong>Assets: Write</strong>, lalu buat key.</li>
+        <li>Salin key sekali saja, tempel di kolom bawah, lalu klik <strong>Connect API</strong>.</li>
+      </ol>
+      <div className="notice-bar notice-success" style={{ marginTop: 16 }}><ShieldCheck size={16} /> Jangan kirim API key ke orang lain. Rival hanya menyimpannya terenkripsi di server.</div>
+    </div>
+    {!robloxApi.connected ? <>
+      <label className="field-label" htmlFor="roblox-api-key">Paste your Roblox API Key</label>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#0f1720', border: '1px solid rgba(200,247,110,0.2)', borderRadius: 12, padding: '0 12px' }}>
+        <input id="roblox-api-key" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Roblox API Key" style={{ flex: 1, background: 'transparent', border: 'none', color: '#edf1ec', padding: '14px 0', outline: 'none' }} />
+        <button type="button" className="secondary-button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button>
+      </div>
+      <div className="result-actions" style={{ marginTop: 18 }}>
+        <button className="primary-button" disabled={busy} onClick={connectApi}>{busy ? 'Connecting...' : 'Connect API'}</button>
+      </div>
+    </> : <>
+      <div className="detail-panel" style={{ padding: 18, borderRadius: 16, background: 'rgba(16,25,20,0.9)', marginBottom: 16 }}>
+        <div className="detail-row"><span>Roblox User ID</span><strong>{robloxApi.userId}</strong></div>
+        <div className="detail-row"><span>Creator</span><strong>{robloxApi.creator}</strong></div>
+        <div className="detail-row"><span>API Status</span><strong>{robloxApi.apiStatus}</strong></div>
+        <div className="detail-row"><span>Asset Permission</span><strong>{robloxApi.permissions.join(', ')}</strong></div>
+      </div>
+      <div className="result-actions">
+        <button className="secondary-button" onClick={testConnection}>Test Connection</button>
+        <button className="secondary-button" onClick={removeApi}>Remove API Key</button>
+      </div>
+    </>}
+    {error && <div className="notice-bar notice-error" style={{ marginTop: 16 }}>{error}</div>}
+    {message && <div className="notice-bar notice-success" style={{ marginTop: 16 }}><Check size={16} /> {message}</div>}
+  </section>;
+}
 function UsageBars() { return <div className="usage-block"><div className="usage-heading"><strong>Request statistics</strong><span>Last 30 days</span></div><div className="usage-row"><span>Conversion requests</span><i><b style={{ width: '18%' }}></b></i><strong>0</strong></div><div className="usage-row"><span>Roblox uploads</span><i><b style={{ width: '7%' }}></b></i><strong>0</strong></div><div className="usage-row"><span>Asset status checks</span><i><b style={{ width: '4%' }}></b></i><strong>0</strong></div></div>; }
 function CodeExamples() { const examples = { JavaScript: `const response = await fetch('/api/audio/convert', {\n  method: 'POST',\n  body: audioFormData\n});`, Python: `requests.post(\n  '/api/audio/convert',\n  files={'audio': open('sound.mp3', 'rb')}\n)`, cURL: `curl -X POST /api/audio/convert \\\n  -F "audio=@sound.mp3"` }; const [tab, setTab] = useState('JavaScript'); return <div className="code-example"><div className="code-tabs">{Object.keys(examples).map((item) => <button key={item} className={tab === item ? 'code-active' : ''} onClick={() => setTab(item)}>{item}</button>)}</div><pre>{examples[tab]}</pre></div>; }
 function ApiDocs() { const endpoints = [['POST', '/api/audio/convert', 'Convert and optimize an audio file'], ['POST', '/api/roblox/upload', 'Upload a converted asset using OAuth'], ['GET', '/api/audio/history', 'Read conversion and upload history'], ['GET', '/api/roblox/assets/:id', 'Check a Roblox asset status']]; return <section className="panel api-panel docs-panel"><div className="panel-title"><div><span className="eyebrow">REFERENCE</span><h2>API Documentation</h2></div><span className="rest-badge">REST API</span></div><p className="docs-intro">Use your server-side API key to connect Rival Dev to internal creator tools. Never expose secret keys in browser code.</p><div className="endpoint-list">{endpoints.map(([method, path, description]) => <div className="endpoint" key={path}><span className={cn('method', method.toLowerCase())}>{method}</span><code>{path}</code><span>{description}</span><ChevronRight size={15} /></div>)}</div><CodeExamples /></section>; }
 function CreditsPage({ navigate }) { const packages = [['100 Credits', '$—', 'For trying the workflow'], ['500 Credits', '$—', 'For active creators'], ['1000 Credits', '$—', 'For small teams']]; return <><section className="panel credits-hero"><div><span className="eyebrow">CURRENT CREDITS</span><h2>0 <small>CREDITS</small></h2><p>Credits will be consumed by conversion workflows once billing is connected.</p></div><Zap size={39} color="#c8f76e" /></section><section className="panel package-panel"><div className="panel-title"><div><span className="eyebrow">CREDITS TOP UP</span><h2>Choose a package</h2></div><span className="muted-note">Payment gateway placeholder</span></div><div className="package-grid">{packages.map(([name, price, description]) => <div className="package-card" key={name}><Zap size={17} color="#c8f76e" /><strong>{name}</strong><b>{price}</b><p>{description}</p><button className="secondary-button" onClick={() => navigate('billing')}>Connect payment <ArrowUpRight size={14} /></button></div>)}</div></section></>; }
 function BillingPage({ openPayment }) { const plans = [{ name: '1 Tahun', price: 'Rp150.000', detail: 'Akses penuh selama 1 tahun' }, { name: '2 Tahun', price: 'Rp340.000', detail: 'Akses penuh selama 2 tahun' }, { name: 'Join Team', price: 'Rp1.000.000', detail: 'Untuk tim dan kolaborasi' }]; return <section className="billing-page"><section className="panel billing-intro"><div><span className="eyebrow">RIVAL DEV PLANS</span><h2>Pilih plan kamu</h2><p>Remix musik gratis sepuasnya. Setelah menekan Buy, QR pembayaran dan nominal plan akan tampil.</p></div><Zap size={32} color="#c8f76e" /></section><div className="plan-grid">{plans.map((plan) => <section className="plan-option" key={plan.name}><span className="plan-kicker">PLAN</span><h3>{plan.name}</h3><strong>{plan.price}</strong><p>{plan.detail}</p><button className="primary-button" onClick={() => openPayment(plan)}>Buy <ArrowUpRight size={16} /></button></section>)}</div></section>; }
-function PaymentHistory() { const payments = [{ invoice: '—', package: 'No purchases', amount: '—', status: 'PENDING', date: '—' }]; return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ACCOUNT</span><h2>Payment History</h2></div><button className="secondary-button"><Download size={15} /> Export</button></div><div className="table-wrap"><table><thead><tr><th>Invoice</th><th>Package</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead><tbody>{payments.map((item) => <tr key={item.invoice}><td>{item.invoice}</td><td>{item.package}</td><td>{item.amount}</td><td><Status status={item.status} /></td><td>{item.date}</td><td><button className="icon-action"><MoreHorizontal size={16} /></button></td></tr>)}</tbody></table></div></section>; }
+function PaymentHistory() {
+  const [payments, setPayments] = useState([]);
+  useEffect(() => {
+    fetch('/api/payments', { credentials: 'include' })
+      .then((response) => response.ok ? response.json() : [])
+      .then((data) => setPayments(Array.isArray(data) ? data : []))
+      .catch(() => setPayments([]));
+  }, []);
+  return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ACCOUNT</span><h2>Payment History</h2></div><button className="secondary-button"><Download size={15} /> Export</button></div><div className="table-wrap"><table><thead><tr><th>Invoice</th><th>Package</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead><tbody>{payments.length ? payments.map((item) => <tr key={item.id}><td>{item.orderNumber}</td><td>{item.planName}</td><td>Rp{Number(item.amount || 0).toLocaleString('id-ID')}</td><td><Status status={item.status} /></td><td>{new Date(item.createdAt).toLocaleDateString('id-ID')}</td><td><a className="icon-action" href={`/api/chats/${item.id}`} target="_blank" rel="noreferrer" aria-label="Open order chat"><MessageCircle size={16} /></a></td></tr>) : <tr><td colSpan="6">Belum ada order pembayaran.</td></tr>}</tbody></table></div></section>;
+}
 
-function PaymentQrModal({ open, close, image, plan }) {
+function PaymentQrModal({ open, close, image, plan, orderStatus, setPaymentOpen, createPaymentOrder, uploadProof, proofFile, setProofFile, chatRoom, chatInput, setChatInput, sendChat, loadChat }) {
   if (!open) return null;
   const currentPlan = plan || { name: 'Pilih plan', price: 'Nominal belum dipilih' };
-  return <div className="payment-modal-backdrop" onClick={close}><section className="payment-modal" onClick={(event) => event.stopPropagation()}><button className="icon-action" onClick={close} aria-label="Close payment"><X size={17} /></button><span className="eyebrow">PREMIUM PAYMENT</span><h2>{currentPlan.name}</h2><div className="payment-amount">{currentPlan.price}</div><p>Scan QR di bawah untuk membayar nominal tersebut, lalu kirim bukti pembayaran kepada admin.</p><img src={image} alt={`QR pembayaran ${currentPlan.name}`} /><button className="secondary-button" onClick={close}>Close</button></section></div>;
+  return <div className="payment-modal-backdrop" onClick={close}><section className="payment-modal" onClick={(event) => event.stopPropagation()}><button className="icon-action" onClick={close} aria-label="Close payment"><X size={17} /></button><span className="eyebrow">PREMIUM PAYMENT</span><h2>{currentPlan.name}</h2><div className="payment-amount">{currentPlan.price}</div><p>Transfer ke rekening berikut, lalu upload bukti pembayaran untuk validasi admin.</p><div className="detail-panel" style={{ padding: 16, borderRadius: 12, marginBottom: 12 }}><div className="detail-row"><span>Tujuan</span><strong>BCA 1234567890 a.n Rival Dev</strong></div><div className="detail-row"><span>Nomor Order</span><strong>{orderStatus?.orderNumber || 'Belum dibuat'}</strong></div></div><img src={image} alt={`QR pembayaran ${currentPlan.name}`} /><div style={{ marginTop: 14 }}><button className="primary-button" onClick={createPaymentOrder}>Buat Nomor Order</button></div>{orderStatus && <div style={{ marginTop: 18 }}><div className="detail-panel" style={{ padding: 16, borderRadius: 12 }}><div className="detail-row"><span>Status</span><strong>{orderStatus.status}</strong></div></div><label className="field-label">Upload Bukti Pembayaran<input type="file" accept="image/*" onChange={(event) => setProofFile(event.target.files[0])} /></label>{proofFile && <small className="muted-note">{proofFile.name}</small>}<button className="primary-button" onClick={uploadProof} style={{ marginTop: 10 }}>Kirim Bukti</button></div>}<div style={{ marginTop: 18, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)' }}><button className="secondary-button" onClick={close}>Close</button></div>{orderStatus && <div style={{ marginTop: 18 }}><div className="panel-title"><div><span className="eyebrow">CHAT ORDER</span><h2>{orderStatus.orderNumber}</h2></div></div><button className="secondary-button" onClick={() => loadChat(orderStatus.id)}>Refresh Chat</button><div className="detail-panel" style={{ padding: 12, borderRadius: 12, marginTop: 10, maxHeight: 180, overflow: 'auto' }}>{(chatRoom.messages || []).map((item, index) => <div key={`${item.sender}-${index}`} style={{ marginBottom: 8 }}><strong>{item.sender}</strong><div>{item.text}</div></div>)}</div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><input value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Tulis pesan..." style={{ flex: 1, background: '#0f1720', border: '1px solid rgba(255,255,255,0.08)', color: 'white', padding: '10px 12px', borderRadius: 8 }} /><button className="primary-button" onClick={sendChat}>Kirim</button></div></div>}</section></div>;
 }
 
 function PageHeader({ page, online }) { if (page === 'remix') return <div className="page-header"><div><div className="breadcrumb">RIVAL DEV <ChevronRight size={13} /> REMIX MUSIK</div><h1>Remix Musik</h1><p>Change playback speed and export a Roblox-ready remix.</p></div><div className="header-date"><Activity size={15} /> {online} online</div></div>; return <WorkspacePageHeader page={page} online={online} />; }
