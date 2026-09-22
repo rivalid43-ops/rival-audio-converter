@@ -29,6 +29,7 @@ const effectiveSessionSecret = hasConfiguredSessionSecret ? configuredSessionSec
 app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
+const ffmpegCommand = String(process.env.FFMPEG_PATH || 'ffmpeg').trim();
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(outputDir, { recursive: true });
 app.use(express.json({ limit: '1mb' }));
@@ -162,16 +163,19 @@ async function robloxFetch(session, url, options = {}) {
 function safeName(value) { return String(value || 'audio').replace(/[^a-z0-9._-]/gi, '-').slice(0, 80); }
 function runFfmpeg(input, output, args) {
   return new Promise((resolve, reject) => {
-    const process = spawn('ffmpeg', ['-y', '-i', input, ...args, output]);
+    const process = spawn(ffmpegCommand, ['-y', '-i', input, ...args, output]);
     let error = '';
     process.stderr.on('data', (chunk) => { error += chunk.toString(); });
-    process.on('error', () => reject(new Error('FFmpeg tidak ditemukan. Install FFmpeg dan pastikan ada di PATH.')));
+    process.on('error', (spawnError) => {
+      if (spawnError.code === 'ENOENT') return reject(new Error(`FFmpeg tidak ditemukan pada "${ffmpegCommand}". Pastikan FFmpeg terpasang di deployment atau atur FFMPEG_PATH.`));
+      reject(spawnError);
+    });
     process.on('close', (code) => code === 0 ? resolve() : reject(new Error(error.slice(-800) || 'Konversi gagal.')));
   });
 }
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: configReady(), robloxConfig: { loadedFrom: robloxConfig().loadedFrom, missing: robloxConfig().missing }, ffmpeg: 'system' }));
+app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: configReady(), robloxConfig: { loadedFrom: robloxConfig().loadedFrom, missing: robloxConfig().missing }, ffmpeg: ffmpegCommand }));
 app.get('/api/session', (req, res) => res.json({ connected: Boolean(authSession(req) || robloxSession(req)), history }));
 app.get('/api/auth/me', (req, res) => {
   if (req.session.googleUser) return res.json({ authenticated: true, user: req.session.googleUser });
@@ -263,9 +267,9 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
   const remixSpeed = Number(req.body.speed);
   const format = String(req.body.format || 'mp3').toLowerCase();
-  if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 2) {
+  if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 4) {
     cleanup(req.file.path);
-    return res.status(400).json({ error: 'Speed remix harus antara 0.50x dan 2.00x.' });
+    return res.status(400).json({ error: 'Speed remix harus antara 0.50x dan 4.00x.' });
   }
   if (!['mp3', 'ogg', 'flac', 'wav'].includes(format)) {
     cleanup(req.file.path);
@@ -280,8 +284,11 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
       : format === 'ogg'
         ? ['-c:a', 'libvorbis', '-q:a', '6']
         : ['-c:a', 'libmp3lame', '-b:a', '192k'];
+  const tempoFilters = remixSpeed <= 2
+    ? [`atempo=${remixSpeed}`]
+    : ['atempo=2', `atempo=${remixSpeed / 2}`];
   try {
-    await runFfmpeg(req.file.path, output, ['-filter:a', `atempo=${remixSpeed}`, ...codecArgs]);
+    await runFfmpeg(req.file.path, output, ['-filter:a', tempoFilters.join(','), ...codecArgs]);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
