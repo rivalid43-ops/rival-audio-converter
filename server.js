@@ -66,17 +66,27 @@ async function initializePaymentDatabase() {
   await databaseRun('PRAGMA journal_mode = WAL');
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_orders (
     id TEXT PRIMARY KEY, order_number TEXT NOT NULL UNIQUE, customer_name TEXT NOT NULL,
-    customer_email TEXT NOT NULL, plan_name TEXT NOT NULL, amount INTEGER NOT NULL,
+    customer_email TEXT NOT NULL, plan_name TEXT NOT NULL, amount INTEGER NOT NULL, credits INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL, created_at TEXT NOT NULL, payment_target TEXT NOT NULL,
     qr_image TEXT, notes TEXT NOT NULL DEFAULT '', proof_url TEXT, uploaded_at TEXT, admin_notes TEXT NOT NULL DEFAULT ''
   )`);
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN credits INTEGER NOT NULL DEFAULT 0').catch(() => {});
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, sender TEXT NOT NULL,
     text TEXT NOT NULL, sent_at TEXT NOT NULL, FOREIGN KEY(order_id) REFERENCES payment_orders(id)
   )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS feature_usage (
+    usage_key TEXT PRIMARY KEY, usage_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+  )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS credit_balances (
+    customer_email TEXT PRIMARY KEY, credits INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
+  )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS credit_grants (
+    order_id TEXT PRIMARY KEY, customer_email TEXT NOT NULL, credits INTEGER NOT NULL, granted_at TEXT NOT NULL
+  )`);
   const orders = await databaseAll('SELECT * FROM payment_orders ORDER BY created_at DESC');
   const messages = await databaseAll('SELECT order_id, sender, text, sent_at FROM payment_messages ORDER BY id ASC');
-  paymentOrders.push(...orders.map((item) => ({ id: item.id, orderNumber: item.order_number, customerName: item.customer_name, customerEmail: item.customer_email, planName: item.plan_name, amount: item.amount, status: item.status, createdAt: item.created_at, paymentTarget: item.payment_target, qrImage: item.qr_image, notes: item.notes, proofUrl: item.proof_url, uploadedAt: item.uploaded_at, adminNotes: item.admin_notes })));
+  paymentOrders.push(...orders.map((item) => ({ id: item.id, orderNumber: item.order_number, customerName: item.customer_name, customerEmail: item.customer_email, planName: item.plan_name, amount: item.amount, credits: item.credits || 0, status: item.status, createdAt: item.created_at, paymentTarget: item.payment_target, qrImage: item.qr_image, notes: item.notes, proofUrl: item.proof_url, uploadedAt: item.uploaded_at, adminNotes: item.admin_notes })));
   messages.forEach((message) => {
     let room = chatRooms.find((item) => item.orderId === message.order_id);
     if (!room) { room = { orderId: message.order_id, participants: [], messages: [] }; chatRooms.push(room); }
@@ -84,13 +94,37 @@ async function initializePaymentDatabase() {
   });
 }
 const paymentDatabaseReady = initializePaymentDatabase().catch((error) => { console.error('Payment database initialization failed:', error); throw error; });
+const usageLimit = 5;
+function usageKey(req) { return requestEmail(req) || `ip:${req.ip}`; }
+async function consumeUsage(req) {
+  if (isPaymentAdmin(req)) return { allowed: true, used: 0, limit: null };
+  await paymentDatabaseReady;
+  const key = usageKey(req);
+  const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [key]);
+  const used = Number(rows[0]?.usage_count || 0);
+  if (used >= usageLimit) return { allowed: false, used, limit: usageLimit };
+  await databaseRun('INSERT INTO feature_usage (usage_key, usage_count, updated_at) VALUES (?, 1, ?) ON CONFLICT(usage_key) DO UPDATE SET usage_count = usage_count + 1, updated_at = excluded.updated_at', [key, new Date().toISOString()]);
+  return { allowed: true, used: used + 1, limit: usageLimit };
+}
+async function usageGuard(req, res, next) {
+  try {
+    const usage = await consumeUsage(req);
+    if (!usage.allowed) return res.status(429).json({ error: 'Batas penggunaan 5 kali sudah tercapai.', usage });
+    res.setHeader('X-Usage-Count', String(usage.used));
+    if (usage.limit) res.setHeader('X-Usage-Limit', String(usage.limit));
+    next();
+  } catch (error) {
+    console.error('Usage limit check failed:', error);
+    res.status(503).json({ error: 'Batas penggunaan belum siap.' });
+  }
+}
 async function savePaymentData() {
   await paymentDatabaseReady;
   await databaseRun('BEGIN TRANSACTION');
   try {
     await databaseRun('DELETE FROM payment_orders');
     await databaseRun('DELETE FROM payment_messages');
-    for (const order of paymentOrders) await databaseRun('INSERT INTO payment_orders (id, order_number, customer_name, customer_email, plan_name, amount, status, created_at, payment_target, qr_image, notes, proof_url, uploaded_at, admin_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [order.id, order.orderNumber, order.customerName, order.customerEmail, order.planName, order.amount, order.status, order.createdAt, order.paymentTarget, order.qrImage, order.notes || '', order.proofUrl || null, order.uploadedAt || null, order.adminNotes || '']);
+    for (const order of paymentOrders) await databaseRun('INSERT INTO payment_orders (id, order_number, customer_name, customer_email, plan_name, amount, credits, status, created_at, payment_target, qr_image, notes, proof_url, uploaded_at, admin_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [order.id, order.orderNumber, order.customerName, order.customerEmail, order.planName, order.amount, order.credits || 0, order.status, order.createdAt, order.paymentTarget, order.qrImage, order.notes || '', order.proofUrl || null, order.uploadedAt || null, order.adminNotes || '']);
     for (const room of chatRooms) for (const message of room.messages) await databaseRun('INSERT INTO payment_messages (order_id, sender, text, sent_at) VALUES (?, ?, ?, ?)', [room.orderId, message.sender, message.text, message.sentAt]);
     await databaseRun('COMMIT');
   } catch (error) {
@@ -113,6 +147,7 @@ setInterval(() => {
 app.use(['/api/payments', '/api/chats'], async (req, res, next) => {
   try { await paymentDatabaseReady; next(); } catch (error) { res.status(503).json({ error: 'Database pembayaran belum siap.' }); }
 });
+app.use(['/api/youtube/validate', '/api/convert', '/api/optimize', '/api/remix', '/api/roblox/upload-audio'], usageGuard);
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 100 * 1024 * 1024 },
@@ -254,7 +289,8 @@ async function validateRobloxApiKey(rawApiKey) {
     const text = await response.text();
     let payload = null;
     try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-    if (response.status === 401 || response.status === 403) return { ok: false, code: 'invalid', error: 'Invalid Roblox API Key' };
+    if (response.status === 401) return { ok: false, code: 'invalid', error: 'Invalid Roblox API Key' };
+    if (response.status === 403) return { ok: true, code: 'permission-check', userId: 'Unknown', creator: 'Creator', permissions: ['Upload pending verification'], status: 'Key saved', message: 'API key tersimpan. Izin upload akan diverifikasi saat upload audio pertama.' };
     if (response.status === 429) return { ok: false, code: 'limit', error: 'Upload limit reached.' };
     if (response.status >= 500) return { ok: false, code: 'unavailable', error: 'Roblox API unavailable.' };
     if (!response.ok) return { ok: false, code: payload?.code || 'permission', error: payload?.message || payload?.error || 'Permission denied.' };
@@ -302,24 +338,46 @@ function runFfmpeg(input, output, args) {
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
 
 app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: configReady(), robloxConfig: { loadedFrom: robloxConfig().loadedFrom, missing: robloxConfig().missing }, ffmpeg: ffmpegCommand }));
+app.get('/api/usage', async (req, res) => {
+  try {
+    await paymentDatabaseReady;
+    if (isPaymentAdmin(req)) return res.json({ used: 0, limit: null, unlimited: true });
+    const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [usageKey(req)]);
+    res.json({ used: Number(rows[0]?.usage_count || 0), limit: usageLimit, unlimited: false });
+  } catch (error) {
+    res.status(503).json({ error: 'Status penggunaan belum siap.' });
+  }
+});
 app.get('/api/session', (req, res) => res.json({ connected: Boolean(authSession(req) || robloxSession(req)), history }));
 app.get('/api/payments/plans', (req, res) => {
   res.json([
-    { id: '1-year', name: '1 Tahun', price: 'Rp150.000', detail: 'Akses penuh selama 1 tahun', amount: 150000 },
-    { id: '2-year', name: '2 Tahun', price: 'Rp340.000', detail: 'Akses penuh selama 2 tahun', amount: 340000 },
-    { id: 'team', name: 'Join Team', price: 'Rp1.000.000', detail: 'Untuk tim dan kolaborasi', amount: 1000000 }
+    { id: '1-year', name: '1 Tahun', price: 'Rp150.000', detail: 'Akses penuh selama 1 tahun', amount: 150000, credits: 100 },
+    { id: '2-year', name: '2 Tahun', price: 'Rp340.000', detail: 'Akses penuh selama 2 tahun', amount: 340000, credits: 300 },
+    { id: 'team', name: 'Join Team', price: 'Rp1.000.000', detail: 'Akses penuh selama 1 tahun', amount: 1000000, credits: 1000 }
   ]);
+});
+app.get('/api/credits', async (req, res) => {
+  const email = requestEmail(req);
+  if (!email) return res.status(401).json({ error: 'Login diperlukan.' });
+  if (isPaymentAdmin(req)) return res.json({ credits: null, unlimited: true });
+  const rows = await databaseAll('SELECT credits FROM credit_balances WHERE customer_email = ?', [email]);
+  res.json({ credits: Number(rows[0]?.credits || 0), unlimited: false });
 });
 app.get('/api/payments', (req, res) => {
   const email = requestEmail(req);
   if (!email) return res.status(401).json({ error: 'Login diperlukan untuk melihat pembelian.' });
   res.json(isPaymentAdmin(req) ? paymentOrders : paymentOrders.filter((order) => String(order.customerEmail || '').toLowerCase() === email));
 });
+app.get('/api/admin/payments', (req, res) => {
+  if (!isPaymentAdmin(req)) return res.status(403).json({ error: 'Khusus admin pembayaran.' });
+  res.json(paymentOrders);
+});
 app.post('/api/payments/create', async (req, res) => {
   const plan = req.body && req.body.plan ? req.body.plan : null;
   const customerName = String(req.session?.googleUser?.name || req.body?.customerName || 'Customer').trim();
   const customerEmail = requestEmail(req);
   const amount = Number(plan?.amount || req.body?.amount || 0);
+  const credits = Math.max(0, Number(plan?.credits || 0));
   if (!customerEmail) return res.status(401).json({ error: 'Login diperlukan untuk membuat order.' });
   if (!plan || !plan.name || !amount) return res.status(400).json({ error: 'Paket tidak valid.' });
   const orderNumber = `RIVAL-${Date.now().toString().slice(-8)}`;
@@ -330,6 +388,7 @@ app.post('/api/payments/create', async (req, res) => {
     customerEmail,
     planName: plan.name,
     amount,
+    credits,
     status: 'waiting_payment',
     createdAt: new Date().toISOString(),
     paymentTarget: 'BCA 1234567890 a.n Rival Dev',
@@ -371,9 +430,12 @@ app.post('/api/payments/:id/status', async (req, res) => {
   order.status = status;
   order.adminNotes = String(req.body.adminNotes || '');
   if (status === 'approved') {
+    const grant = await databaseRun('INSERT OR IGNORE INTO credit_grants (order_id, customer_email, credits, granted_at) VALUES (?, ?, ?, ?)', [order.id, order.customerEmail, order.credits || 0, new Date().toISOString()]);
+    if (grant.changes === 1 && order.credits > 0) await databaseRun('INSERT INTO credit_balances (customer_email, credits, updated_at) VALUES (?, ?, ?) ON CONFLICT(customer_email) DO UPDATE SET credits = credits + excluded.credits, updated_at = excluded.updated_at', [order.customerEmail, order.credits, new Date().toISOString()]);
     if (!chatRooms.some((room) => room.orderId === order.id)) {
       chatRooms.push({ orderId: order.id, participants: [order.customerName, 'Seller'], messages: [{ sender: 'Seller', text: 'Halo! Pembayaran sudah diterima. Selamat menikmati akses.', sentAt: new Date().toISOString() }] });
     }
+    order.creditsGranted = true;
   }
   await savePaymentData();
   res.json({ ok: true, order });
@@ -401,6 +463,13 @@ app.get('/api/auth/me', (req, res) => {
   const session = authSession(req);
   if (!session?.user) return res.status(401).json({ authenticated: false });
   res.json({ authenticated: true, user: session.user });
+});
+app.put('/api/profile', (req, res) => {
+  if (!req.session.googleUser) return res.status(401).json({ error: 'Login diperlukan.' });
+  const name = String(req.body?.name || '').trim().slice(0, 80);
+  if (!name) return res.status(400).json({ error: 'Nama wajib diisi.' });
+  req.session.googleUser.name = name;
+  req.session.save((error) => error ? res.status(500).json({ error: 'Profil gagal disimpan.' }) : res.json({ ok: true, user: req.session.googleUser }));
 });
 app.get('/api/auth/config', (req, res) => res.json({ googleConfigured: googleReady() }));
 app.post('/api/auth/logout', (req, res) => {
@@ -635,7 +704,8 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     cleanup(req.file.path);
     if (!uploadResponse.ok) {
       const message = uploadData?.message || uploadData?.error || 'Roblox menolak upload.';
-      if (uploadResponse.status === 401 || uploadResponse.status === 403) return res.status(401).json({ success: false, error: 'Invalid Roblox API Key' });
+      if (uploadResponse.status === 401) return res.status(401).json({ success: false, error: 'Invalid Roblox API Key' });
+      if (uploadResponse.status === 403) return res.status(403).json({ success: false, error: 'Izin upload ditolak Roblox. Pastikan API Key memiliki Assets: Write dan terhubung ke universe yang benar.' });
       if (uploadResponse.status === 429) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
       if (uploadResponse.status >= 500) return res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
       return res.status(uploadResponse.status).json({ success: false, error: message });
@@ -669,19 +739,21 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
 });
 app.post('/api/roblox-api/connect', async (req, res) => {
   const apiKey = String(req.body.apiKey || '').trim();
+  const creatorUserId = String(req.body.creatorUserId || '').trim();
   if (!apiKey) return res.status(400).json({ ok: false, error: 'Paste your Roblox API Key' });
+  if (creatorUserId && !/^\d+$/.test(creatorUserId)) return res.status(400).json({ ok: false, error: 'Creator/User ID harus berupa angka.' });
   const validation = await validateRobloxApiKey(apiKey);
   if (!validation.ok) return res.status(401).json({ ok: false, error: validation.error || 'Invalid Roblox API Key' });
   setRobloxApiSession(req, {
     encryptedKey: encryptRobloxApiKey(apiKey),
-    userId: validation.userId || 'Unknown',
+    userId: validation.userId !== 'Unknown' ? validation.userId : creatorUserId || 'Unknown',
     creator: validation.creator || 'Creator',
     permissions: validation.permissions || ['Assets', 'Read', 'Write'],
-    apiStatus: 'Connected',
+    apiStatus: validation.status || 'Connected',
     connected: true,
     connectedAt: new Date().toISOString()
   });
-  res.json({ ok: true, connected: true, userId: validation.userId || 'Unknown', creator: validation.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: 'Connected' });
+  res.json({ ok: true, connected: true, userId: validation.userId !== 'Unknown' ? validation.userId : creatorUserId || 'Unknown', creator: validation.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: validation.status || 'Connected', message: validation.message || '' });
 });
 app.get('/api/roblox-api/session', (req, res) => {
   const session = getRobloxApiSession(req);
@@ -693,7 +765,7 @@ app.get('/api/roblox-api/session', (req, res) => {
     userId: session.userId || 'Unknown',
     creator: session.creator || 'Creator',
     permissions: session.permissions || ['Assets', 'Read', 'Write'],
-    apiStatus: 'Connected',
+    apiStatus: validation.status || 'Connected',
     connectedAt: session.connectedAt || new Date().toISOString()
   };
   res.json(payload);
@@ -712,7 +784,7 @@ app.post('/api/roblox-api/test', async (req, res) => {
     apiStatus: 'Connected',
     connected: true
   });
-  res.json({ ok: true, connected: true, userId: validation.userId || session.userId || 'Unknown', creator: validation.creator || session.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: 'Connected' });
+  res.json({ ok: true, connected: true, userId: validation.userId || session.userId || 'Unknown', creator: validation.creator || session.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: validation.status || 'Connected', message: validation.message || '' });
 });
 app.delete('/api/roblox-api/remove', (req, res) => {
   clearRobloxApiSession(req);

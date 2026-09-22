@@ -1,9 +1,21 @@
-.metric-icon {
-  background: color-mix(in srgb, currentColor 16%, transparent);
-  color: currentColor;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 28%, transparent), 0 0 14px color-mix(in srgb, currentColor 12%, transparent);
+.metric-card .metric-icon {
+  background: transparent !important;
+  color: inherit !important;
+  box-shadow: none !important;
+  border: 1px solid currentColor;
 }
 
-.metric-icon svg {
-  stroke-width: 2.4;
+.metric-card .metric-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: inherit !important;
+  stroke: currentColor !important;
+  fill: none !important;
+  stroke-width: 2.5;
 }
+
+.metric-lime .metric-icon { color: var(--lime) !important; }
+.metric-blue .metric-icon { color: var(--blue) !important; }
+.metric-orange .metric-icon { color: var(--orange) !important; }
+.metric-purple .metric-icon { color: var(--purple) !important; }

@@ -1,0 +1,10 @@
+.payment-modal {
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.payment-modal img {
+  width: min(280px, 100%);
+  margin: 8px auto 12px;
+}
