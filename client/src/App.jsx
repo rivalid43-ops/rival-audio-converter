@@ -501,15 +501,19 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
     </div>
     <p style={{ color: '#d7dce5', marginBottom: 20 }}>Connect your Roblox account using your own Roblox Open Cloud API Key.</p>
     <div className="detail-panel" style={{ padding: 18, borderRadius: 14, marginBottom: 20 }}>
-      <div className="panel-title"><div><span className="eyebrow">TUTORIAL</span><h3 style={{ margin: '8px 0 0' }}>Cara membuat Roblox API Key</h3></div><KeyRound size={21} color="#c8f76e" /></div>
+      <div className="panel-title"><div><span className="eyebrow">PANDUAN LENGKAP</span><h3 style={{ margin: '8px 0 0' }}>Cara menghubungkan Roblox API</h3></div><KeyRound size={21} color="#c8f76e" /></div>
       <ol style={{ margin: '16px 0 0', paddingLeft: 22, color: '#d7dce5', lineHeight: 1.8 }}>
-        <li>Buka <a href="https://create.roblox.com/credentials" target="_blank" rel="noreferrer" style={{ color: '#c8f76e' }}>Roblox Creator Dashboard → Credentials</a>.</li>
-        <li>Klik <strong>Open Cloud API Keys</strong>, lalu pilih <strong>Create API Key</strong>.</li>
-        <li>Beri nama, misalnya <strong>Rival Audio Converter</strong>, dan pilih pengalaman atau universe milikmu.</li>
-        <li>Aktifkan izin <strong>Assets: Read</strong> dan <strong>Assets: Write</strong>, lalu buat key.</li>
-        <li>Salin key sekali saja, tempel di kolom bawah, lalu klik <strong>Connect API</strong>.</li>
+        <li>Buka <a href="https://create.roblox.com/credentials" target="_blank" rel="noreferrer" style={{ color: '#c8f76e' }}>Roblox Creator Dashboard → Credentials</a>. Pastikan login dengan akun pemilik game.</li>
+        <li>Pilih tab <strong>Open Cloud</strong> atau <strong>API Keys</strong>, lalu klik <strong>Create API Key</strong>.</li>
+        <li>Pada nama key, isi <strong>Rival Audio Converter</strong>. Jangan gunakan key milik orang lain.</li>
+        <li>Pada <strong>Resources</strong>, pilih universe/game yang benar. Ini harus game tempat audio akan disimpan.</li>
+        <li>Pada <strong>Permissions</strong>, aktifkan <strong>Assets → Read</strong> dan <strong>Assets → Write</strong>. Tanpa <strong>Write</strong>, upload pasti ditolak.</li>
+        <li>Klik <strong>Save/Create</strong>, salin API key yang muncul, lalu tempel ke kolom API Key di bawah.</li>
+        <li>Isi <strong>Creator/User ID</strong> pemilik game. Buka profil Roblox pemilik, salin angka ID dari URL profil, contoh: <strong>123456789</strong>.</li>
+        <li>Centang ulang: game benar, permission Read + Write, dan ID angka benar. Baru klik <strong>Connect API</strong>.</li>
       </ol>
-      <div className="notice-bar notice-success" style={{ marginTop: 16 }}><ShieldCheck size={16} /> Jangan kirim API key ke orang lain. Rival hanya menyimpannya terenkripsi di server.</div>
+      <div className="notice-bar notice-success" style={{ marginTop: 16 }}><ShieldCheck size={16} /> API key tidak boleh dibagikan. Key disimpan terenkripsi dan tidak ditampilkan kembali.</div>
+      <div className="notice-bar notice-error" style={{ marginTop: 10 }}><strong>Jika muncul "Izin ditolak":</strong> hapus key lama, buat key baru dengan resource game dan Assets → Write yang benar, lalu masukkan ulang Creator/User ID.</div>
     </div>
     {!robloxApi.connected ? <>
       <label className="field-label" htmlFor="roblox-api-key">Paste your Roblox API Key</label>
@@ -517,9 +521,9 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
         <input id="roblox-api-key" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Roblox API Key" style={{ flex: 1, background: 'transparent', border: 'none', color: '#edf1ec', padding: '14px 0', outline: 'none' }} />
         <button type="button" className="secondary-button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button>
       </div>
-      <label className="field-label" htmlFor="roblox-creator-id" style={{ marginTop: 14 }}>Creator / User ID (optional)</label>
+      <label className="field-label" htmlFor="roblox-creator-id" style={{ marginTop: 14 }}>Creator / User ID</label>
       <input id="roblox-creator-id" value={creatorUserId} onChange={(event) => setCreatorUserId(event.target.value)} placeholder="Contoh: 123456789" inputMode="numeric" />
-      <small className="muted-note">Isi jika Roblox tidak otomatis mengembalikan Creator ID dari API key.</small>
+      <small className="muted-note">Wajib diisi jika Roblox menolak izin baca atau tidak mengembalikan Creator ID.</small>
       <div className="result-actions" style={{ marginTop: 18 }}>
         <button className="primary-button" disabled={busy} onClick={connectApi}>{busy ? 'Connecting...' : 'Connect API'}</button>
       </div>
