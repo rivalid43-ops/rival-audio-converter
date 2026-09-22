@@ -55,6 +55,20 @@ function robloxMissingMessage(config) {
 function googleReady() {
   return [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI].every((value) => value && !value.startsWith('your-') && !value.startsWith('PASTE_'));
 }
+function validateGoogleRedirectUri(redirectUri) {
+  const issues = [];
+  const value = String(redirectUri || '').trim();
+  if (!value) {
+    issues.push('GOOGLE_REDIRECT_URI is not set.');
+    return { value, issues };
+  }
+  if (value !== redirectUri) issues.push('GOOGLE_REDIRECT_URI has leading/trailing whitespace.');
+  if (!/^https?:\/\//i.test(value)) issues.push('GOOGLE_REDIRECT_URI must start with http:// or https://.');
+  if (value.endsWith('/') && !value.endsWith('://')) issues.push('GOOGLE_REDIRECT_URI must not have a trailing slash.');
+  if (!value.endsWith('/auth/google/callback')) issues.push('GOOGLE_REDIRECT_URI must end with /auth/google/callback (exact path, case-sensitive).');
+  if (/\s/.test(value)) issues.push('GOOGLE_REDIRECT_URI contains whitespace characters.');
+  return { value, issues };
+}
 function sessionSecret() { return process.env.SESSION_SECRET && process.env.SESSION_SECRET !== 'replace-with-a-long-random-value' ? process.env.SESSION_SECRET : null; }
 function signSession(sessionId) { const signature = crypto.createHmac('sha256', sessionSecret()).update(sessionId).digest('hex'); return `${sessionId}.${signature}`; }
 function readCookie(req, name) { const cookies = String(req.headers.cookie || '').split(';').map((item) => item.trim()); const value = cookies.find((item) => item.startsWith(`${name}=`)); return value ? decodeURIComponent(value.slice(name.length + 1)) : ''; }
@@ -156,14 +170,22 @@ app.post('/api/auth/logout', (req, res) => {
 app.get('/auth/google', (req, res) => {
   if (!sessionSecret()) return res.status(503).send('SESSION_SECRET belum dikonfigurasi dengan nilai random yang aman.');
   if (!googleReady()) return res.status(503).send('Google OAuth belum dikonfigurasi. Isi GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, dan GOOGLE_REDIRECT_URI di .env.');
+  const redirectUriCheck = validateGoogleRedirectUri(process.env.GOOGLE_REDIRECT_URI);
+  console.log('[google-oauth] GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID);
+  console.log('[google-oauth] GOOGLE_REDIRECT_URI:', redirectUriCheck.value);
+  if (redirectUriCheck.issues.length) {
+    console.warn('[google-oauth] GOOGLE_REDIRECT_URI validation issues:', redirectUriCheck.issues.join(' '));
+  }
   const state = crypto.randomBytes(24).toString('hex');
   req.session.googleOAuthState = state;
   const stateCookie = googleStateCookie(state);
   const params = new URLSearchParams({ client_id: process.env.GOOGLE_CLIENT_ID, redirect_uri: process.env.GOOGLE_REDIRECT_URI, response_type: 'code', scope: 'openid email profile', state, access_type: 'offline', prompt: 'select_account' });
+  const authorizationUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+  console.log('[google-oauth] Authorization URL:', authorizationUrl);
   req.session.save((error) => {
     if (error) return res.status(500).send('Session OAuth Google gagal disimpan.');
     res.setHeader('Set-Cookie', [stateCookie]);
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+    res.redirect(authorizationUrl);
   });
 });
 app.get('/auth/google/callback', async (req, res) => {
@@ -171,7 +193,11 @@ app.get('/auth/google/callback', async (req, res) => {
   const expectedStateFromSession = req.session.googleOAuthState;
   const expectedStateFromCookie = readSignedCookie(req, 'rival_google_oauth_state', 'google');
   const expectedState = expectedStateFromSession || expectedStateFromCookie;
+  console.log('[google-oauth-callback] Received state:', receivedState);
+  console.log('[google-oauth-callback] Expected state (session):', expectedStateFromSession);
+  console.log('[google-oauth-callback] Expected state (cookie):', expectedStateFromCookie);
   if (!expectedState || !receivedState || expectedState.length !== receivedState.length || !crypto.timingSafeEqual(Buffer.from(expectedState), Buffer.from(receivedState))) {
+    console.warn('[google-oauth-callback] State mismatch. This can happen if GOOGLE_REDIRECT_URI does not match the domain the request was received on, or the session/cookie was lost.');
     res.setHeader('Set-Cookie', googleStateCookie('', 0));
     return res.status(400).send('Google OAuth state tidak valid. Silakan coba lagi.');
   }
@@ -179,6 +205,11 @@ app.get('/auth/google/callback', async (req, res) => {
   res.setHeader('Set-Cookie', googleStateCookie('', 0));
   await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
   try {
+    const redirectUriCheck = validateGoogleRedirectUri(process.env.GOOGLE_REDIRECT_URI);
+    console.log('[google-oauth-callback] redirect_uri used for token exchange:', redirectUriCheck.value);
+    if (redirectUriCheck.issues.length) {
+      console.warn('[google-oauth-callback] GOOGLE_REDIRECT_URI validation issues:', redirectUriCheck.issues.join(' '));
+    }
     const body = new URLSearchParams({ code: req.query.code, client_id: process.env.GOOGLE_CLIENT_ID, client_secret: process.env.GOOGLE_CLIENT_SECRET, redirect_uri: process.env.GOOGLE_REDIRECT_URI, grant_type: 'authorization_code' });
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
     const tokens = await tokenResponse.json();
@@ -315,4 +346,16 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
 });
 
 app.get('*', (req, res) => res.sendFile(path.join(fs.existsSync(clientDist) ? clientDist : root, 'index.html')));
-app.listen(port, () => console.log(`Rival Audio Converter running at http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`Rival Audio Converter running at http://localhost:${port}`);
+  if (process.env.GOOGLE_REDIRECT_URI) {
+    const startupCheck = validateGoogleRedirectUri(process.env.GOOGLE_REDIRECT_URI);
+    console.log('[google-oauth] Configured GOOGLE_REDIRECT_URI:', startupCheck.value);
+    if (startupCheck.issues.length) {
+      console.warn('[google-oauth] GOOGLE_REDIRECT_URI looks misconfigured:', startupCheck.issues.join(' '));
+      console.warn('[google-oauth] This must match EXACTLY (protocol, domain, path, no trailing slash) an "Authorized redirect URI" in Google Cloud Console, otherwise Google will return "Error 400: redirect_uri_mismatch".');
+    }
+  } else {
+    console.warn('[google-oauth] GOOGLE_REDIRECT_URI is not set. Google login will be disabled until it is configured.');
+  }
+});
