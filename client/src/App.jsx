@@ -490,6 +490,7 @@ function App() {
   const [language, setLanguage] = useState('id');
   const [session] = useState({ connected: false, name: 'Rivalid', userId: '—' });
   const [credits, setCredits] = useState(0);
+  const [usageStatus, setUsageStatus] = useState({ used: 0, limit: 5, freeRemaining: 5, unlimited: false, subscription: null });
   const [history, setHistory] = useState(recentUploads);
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
