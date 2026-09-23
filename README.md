@@ -6,7 +6,7 @@ Premium React + Vite dashboard untuk mengonversi audio dan mengunggah asset ke R
 
 - Node.js 18 atau lebih baru
 - FFmpeg terpasang dan tersedia di `PATH`
-- Roblox OAuth app dan creator/user yang memiliki izin upload audio
+- Roblox Open Cloud API key dan Creator/User ID yang memiliki izin upload audio
 
 ## Install dan jalankan
 
@@ -37,28 +37,31 @@ Database persistence schema tersedia di `database/schema.sql` untuk users, credi
 
 Isi `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, dan `GOOGLE_REDIRECT_URI` untuk login awal. Buat OAuth Client ID bertipe Web application di Google Cloud Console, lalu daftarkan redirect URI yang sama, misalnya `http://localhost:3000/auth/google/callback`.
 
-Isi juga `ROBLOX_CLIENT_ID`, `ROBLOX_CLIENT_SECRET`, dan `ROBLOX_REDIRECT_URI` untuk upload Roblox. Creator ID tidak ada di `.env`: backend selalu mengambilnya dari profil Roblox yang sedang login. `SESSION_SECRET` disediakan untuk konfigurasi deployment; token OAuth disimpan hanya di memory server pada contoh ini dan tidak pernah dikirim ke frontend.
+Roblox memakai API key Open Cloud dari halaman Credentials. API key dikirim sekali ke backend melalui HTTPS, lalu disimpan terenkripsi hanya di memory server per session; session database hanya menyimpan reference acak. `ROBLOX_API_KEY_SECRET` wajib diatur di Railway Environment Variables dan tidak boleh masuk Git. Isi User ID atau Group ID yang sesuai saat menghubungkan key.
 
 ## Alur Roblox
 
-1. Klik **Login with Roblox** di halaman Uploader. Aplikasi membuka popup ke OAuth Roblox resmi.
-2. Selesaikan OAuth dan berikan scope `openid profile asset:read asset:write`.
-3. Backend memvalidasi state + PKCE, menukar authorization code, mengambil userinfo, lalu menyimpan access/refresh token hanya di memory server.
+1. Buka Roblox Creator Dashboard → Credentials → Open Cloud/API Keys.
+2. Buat key baru dengan resource experience/game yang benar dan hanya permission Assets yang diperlukan endpoint resmi. Upload audio memerlukan `Assets: Write`; Read hanya diperlukan bila memakai endpoint status yang membutuhkan pembacaan asset.
+3. Masukkan API key di halaman Roblox API, pilih target **Personal User** atau **Community/Group**, lalu masukkan ID target.
 4. Konversi audio lokal ke MP3, WAV, atau OGG.
-5. Klik **Upload to Roblox**. Server memanggil `https://apis.roblox.com/assets/v1/assets` dengan token user yang sedang login.
-6. Creator ID diambil dari `userinfo.sub`; tidak ada `ROBLOX_CREATOR_USER_ID` dan tidak ada akun developer bersama.
+5. Klik **Upload to Roblox**. Server memanggil `https://apis.roblox.com/assets/v1/assets` memakai API key tersebut.
 
 Endpoint Roblox:
 
-- `GET /auth/roblox`
-- `GET /auth/roblox/callback`
-- `GET /api/auth/roblox/me`
-- `POST /api/auth/roblox/logout`
+- `POST /api/roblox-api/connect`
+- `GET /api/roblox-api/session`
+- `POST /api/roblox-api/test`
+- `DELETE /api/roblox-api/remove`
 - `POST /api/roblox/upload-audio`
 
-Tidak ada `ROBLOX_CREATOR_USER_ID` dan tidak ada endpoint upload yang memakai token developer. Endpoint upload hanya menerima cookie session Roblox user yang sedang login.
+Tidak ada `ROBLOX_CREATOR_USER_ID`, Universe ID, atau Place ID yang dipakai sebagai pengganti creator. Endpoint upload hanya menerima session Google user dan reference credential server-side milik user tersebut.
 
-Untuk production, gunakan HTTPS, session store persisten yang terenkripsi, CSRF protection, rate limiting, dan secret manager. Jangan commit `.env`.
+Untuk production, gunakan HTTPS, cookie `HttpOnly`/`Secure`/`SameSite`, CSRF protection, rate limiting, dan Railway Secret/Environment Variables. API key tidak dipersistenkan ke database dan akan perlu dimasukkan ulang setelah restart/deploy.
+
+Untuk upload ke Community/Group, API key harus dibuat dengan resource experience/game yang benar dan akun pembuat key harus memiliki izin yang sesuai pada Community tersebut. Aplikasi mengirim `creator.userId` untuk target personal dan `creator.groupId` untuk target Community/Group. Universe ID hanya boleh digunakan pada endpoint Roblox yang secara eksplisit memintanya; aplikasi ini tidak mengubah ID secara otomatis.
+
+Roblox tidak menyediakan endpoint umum untuk membaca daftar permission write API key tanpa menjalankan operasi asset. Karena itu koneksi hanya memvalidasi session, bentuk API key yang tidak kosong, jenis creator, dan ID numerik; permission/resource sebenarnya diverifikasi oleh endpoint upload resmi dan response `401/403` dikategorikan secara jelas. Aplikasi tidak membuat request upload palsu atau endpoint fallback.
 
 ## YouTube
 

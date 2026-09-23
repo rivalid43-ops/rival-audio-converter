@@ -103,6 +103,7 @@ function App() {
   const [notice, setNotice] = useState('');
   const [authUser, setAuthUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [adminAccess, setAdminAccess] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [paymentOrders, setPaymentOrders] = useState([]);
@@ -111,7 +112,7 @@ function App() {
   const [chatInput, setChatInput] = useState('');
   const [proofFile, setProofFile] = useState(null);
   const [online, setOnline] = useState(0);
-  const [robloxApi, setRobloxApi] = useState({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
+  const [robloxApi, setRobloxApi] = useState({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' });
 
   useEffect(() => {
     const sendPresence = () => fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorIdRef.current }) }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.online !== undefined) setOnline(data.online); }).catch(() => {});
@@ -150,7 +151,8 @@ function App() {
 
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));
-    fetch('/api/roblox-api/session', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.connected) setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' }); else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' }); }).catch(() => setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' }));
+    fetch('/api/admin/status', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => setAdminAccess(Boolean(data?.isAdmin))).catch(() => setAdminAccess(false));
+    fetch('/api/roblox-api/session', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data?.connected) setRobloxApi({ connected: true, creatorType: data.creatorType || 'user', creatorId: data.creatorId || data.userId || '—', userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Permission checked by Roblox on upload'], apiStatus: data.apiStatus || 'READY_FOR_UPLOAD_CHECK' }); else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' }); }).catch(() => setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' }));
     fetch('/api/session', { credentials: 'include' }).then((res) => res.json()).then((data) => { if (data.history?.length) setHistory(data.history.map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() }))); }).catch(() => {});
     fetch('/api/credits', { credentials: 'include' }).then((res) => res.ok ? res.json() : null).then((data) => { if (data && !data.unlimited) setCredits(Number(data.credits || 0)); }).catch(() => {});
   }, []);
@@ -255,12 +257,12 @@ function App() {
 
   if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
   if (!authUser) return <LoginScreen />;
-  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} refreshHistory={refreshHistory} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} paymentOrders={paymentOrders} setPaymentOrders={setPaymentOrders} orderStatus={orderStatus} setOrderStatus={setOrderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} approvePayment={approvePayment} chatRoom={chatRoom} setChatRoom={setChatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} proofFile={proofFile} setProofFile={setProofFile} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} orderStatus={orderStatus} setPaymentOpen={setPaymentOpen} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} /></>;
+  return <><div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} openPayment={() => openPayment()} isAdmin={adminAccess} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} /><main className="page-content"><WorkspacePageHeader page={page} online={online} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} busy={busy} notice={notice} convert={convert} upload={upload} session={session} setSession={setSession} credits={credits} setCredits={setCredits} history={history} refreshHistory={refreshHistory} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} paymentOrders={paymentOrders} setPaymentOrders={setPaymentOrders} orderStatus={orderStatus} setOrderStatus={setOrderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} approvePayment={approvePayment} chatRoom={chatRoom} setChatRoom={setChatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} proofFile={proofFile} setProofFile={setProofFile} /></main></div></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentQr} plan={selectedPlan} orderStatus={orderStatus} setPaymentOpen={setPaymentOpen} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={sendChat} loadChat={loadChat} /></>;
 }
 
 function LoginScreen() { const [configured, setConfigured] = useState(null); useEffect(() => { fetch('/api/auth/config').then((res) => res.json()).then((data) => setConfigured(data.googleConfigured)).catch(() => setConfigured(false)); }, []); return <main className="login-screen"><div className="login-grid"></div><section className="login-card"><div className="login-brand"><span className="brand-icon"><Zap size={18} fill="currentColor" /></span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></div><div className="login-icon"><Music2 size={23} /></div><span className="eyebrow">AUDIO WORKSPACE</span><h1>Make your sound<br /><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button className="google-button" onClick={() => { window.location.href = '/auth/google'; }}><span>G</span>{configured === false ? 'Configure Google OAuth' : 'Continue with Google'}<ArrowUpRight size={16} /></button>{configured === false && <small className="login-setup-warning">Backend belum membaca konfigurasi Google. Restart server setelah mengisi `.env`.</small>}<small className="login-legal">By continuing, you agree to use audio you have permission to process.</small></section><div className="login-side-note"><span>01</span><strong>CREATE / CONVERT / PUBLISH</strong><p>A quieter workspace for serious Roblox creators.</p></div></main>; }
 
-function Sidebar({ page, navigate, open, collapsed, setCollapsed, openPayment, authUser }) { const isAdmin = String(authUser?.email || '').toLowerCase() === 'rivalid43@gmail.com'; return <aside className={cn('sidebar-shell', open && 'sidebar-open', collapsed && 'sidebar-collapsed')}><div className="sidebar-brand"><span className="brand-icon"><Zap size={17} fill="currentColor" /></span><div><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></div></div><div className="sidebar-scroll">{navGroups.map((group) => <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{group.items.filter(([, id]) => id !== 'admin-payments' || isAdmin).map(([label, id, Icon]) => <button title={collapsed ? label : undefined} key={id} className={cn('nav-item', page === id && 'nav-item-active')} onClick={() => navigate(id)}><Icon size={16} /><span>{label}</span>{page === id && <ChevronRight className="nav-arrow" size={14} />}</button>)}</div>)} </div><div className="upgrade-card"><Sparkles size={17} color="#c8f76e" /><strong>UPGRADE TO PREMIUM</strong><p>Unlock unlimited audio converter and more benefits.</p><button onClick={openPayment}><Sparkles size={13} /> Upgrade Now</button></div><div className="sidebar-footer"><span><CircleHelp size={14} /> Help center</span><span>v1.0.0</span></div><button className="collapse-button" onClick={() => setCollapsed(!collapsed)}><ChevronRight size={15} className={collapsed ? '' : 'collapse-icon-open'} /><span>{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span></button></aside>; }
+function Sidebar({ page, navigate, open, collapsed, setCollapsed, openPayment, isAdmin }) { return <aside className={cn('sidebar-shell', open && 'sidebar-open', collapsed && 'sidebar-collapsed')}><div className="sidebar-brand"><span className="brand-icon"><Zap size={17} fill="currentColor" /></span><div><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></div></div><div className="sidebar-scroll">{navGroups.map((group) => <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{group.items.filter(([, id]) => id !== 'admin-payments' || isAdmin).map(([label, id, Icon]) => <button title={collapsed ? label : undefined} key={id} className={cn('nav-item', page === id && 'nav-item-active')} onClick={() => navigate(id)}><Icon size={16} /><span>{label}</span>{page === id && <ChevronRight className="nav-arrow" size={14} />}</button>)}</div>)} </div><div className="upgrade-card"><Sparkles size={17} color="#c8f76e" /><strong>UPGRADE TO PREMIUM</strong><p>Unlock unlimited audio converter and more benefits.</p><button onClick={openPayment}><Sparkles size={13} /> Upgrade Now</button></div><div className="sidebar-footer"><span><CircleHelp size={14} /> Help center</span><span>v1.0.0</span></div><button className="collapse-button" onClick={() => setCollapsed(!collapsed)}><ChevronRight size={15} className={collapsed ? '' : 'collapse-icon-open'} /><span>{collapsed ? 'Expand sidebar' : 'Collapse sidebar'}</span></button></aside>; }
 function Topbar({ session, credits, setSidebarOpen, navigate, online, openPayment }) { return <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="topbar-greeting"><span>Hallo Bro /</span><strong>{session.name}</strong><i></i><small>{online} ONLINE</small></div><div className="topbar-actions"><div className="credit-pill"><Zap size={14} fill="currentColor" /> <span>{credits} credits</span><button onClick={openPayment}>Buy</button></div><a className="discord-button" href="https://discord.gg/YBFSd2vMh" target="_blank" rel="noreferrer"><MessageCircle size={16} /> Discord</a><button className="icon-action"><Bell size={17} /><b></b></button><button className="avatar-button" onClick={() => navigate('profile')}><span>R</span><strong>Rivalid</strong><ChevronRight size={14} /></button></div></header>; }
 function WorkspacePageHeader({ page }) { const titles = { dashboard: ['Dashboard', 'Welcome back, Rivalid.'], 'roblox-audio': ['Roblox Audio', 'Manage your Roblox-ready audio assets.'], converter: ['Audio Converter', 'Convert and optimize audio for Roblox.'], youtube: ['YouTube Audio Converter', 'Validate a source and keep your workflow rights-aware.'], optimizer: ['Audio Optimizer', 'Clean up levels and prepare a polished audio file.'], 'file-converter': ['File Converter', 'Move between creator-friendly audio formats.'], uploader: ['Roblox Audio Uploader', 'Upload approved audio directly to your Roblox creator account.'], library: ['Audio Library', 'Your prepared audio assets in one place.'], history: ['Upload History', 'Track every conversion and Roblox upload.'], 'b2b-api': ['B2B API', 'Professional tools for teams and high-volume workflows.'], 'developer-api': ['Developer API', 'Manage credentials, credits, and request usage.'], 'api-docs': ['API Documentation', 'Build on the Rival Dev REST API.'], payments: ['Payment History', 'Review invoices and credit purchases.'], credits: ['Credits', 'Manage your conversion capacity.'], billing: ['Billing', 'Plan and payment settings.'], profile: ['Profile', 'Manage your creator identity and connected account.'], settings: ['Settings', 'Control workspace preferences and integrations.'] }; const [title, subtitle] = titles[page] || titles.converter; return <div className="page-header"><div><div className="breadcrumb">RIVAL DEV <ChevronRight size={13} /> {title.toUpperCase()}</div><h1>{title}</h1><p>{subtitle}</p></div><div className="header-date"><Activity size={15} /> 86 online</div></div>; }
 function RemixPage() {
@@ -432,7 +434,8 @@ function ApiCredential() { const [revealed, setRevealed] = useState(false); retu
 
 function RobloxApiPage({ robloxApi, setRobloxApi }) {
   const [apiKey, setApiKey] = useState('');
-  const [creatorUserId, setCreatorUserId] = useState('');
+  const [creatorType, setCreatorType] = useState('user');
+  const [creatorId, setCreatorId] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -441,8 +444,8 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
   const refreshStatus = async () => {
     const response = await fetch('/api/roblox-api/session', { credentials: 'include' });
     const data = await response.json();
-    if (data.connected) setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' });
-    else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
+    if (data.connected) setRobloxApi({ connected: true, creatorType: data.creatorType || 'user', creatorId: data.creatorId || data.userId || '—', userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Permission checked by Roblox on upload'], apiStatus: data.apiStatus || 'READY_FOR_UPLOAD_CHECK' });
+    else setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' });
   };
 
   const connectApi = async () => {
@@ -453,14 +456,14 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, creatorUserId })
+        body: JSON.stringify({ apiKey, creatorType, creatorId })
       });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Invalid Roblox API Key');
-      setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' });
+      setRobloxApi({ connected: true, creatorType: data.creatorType || creatorType, creatorId: data.creatorId || creatorId, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Permission checked by Roblox on upload'], apiStatus: data.apiStatus || 'READY_FOR_UPLOAD_CHECK' });
       setMessage(data.message || 'Connected');
       setApiKey('');
-      setCreatorUserId('');
+      setCreatorId('');
     } catch (err) {
       setError(err.message || 'Invalid Roblox API Key');
     } finally {
@@ -474,7 +477,7 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
       const response = await fetch('/api/roblox-api/test', { method: 'POST', credentials: 'include' });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Invalid Roblox API Key');
-      setRobloxApi({ connected: true, userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Assets', 'Read', 'Write'], apiStatus: data.apiStatus || 'Connected' });
+      setRobloxApi({ connected: true, creatorType: data.creatorType || 'user', creatorId: data.creatorId || data.userId || '—', userId: data.userId || '—', creator: data.creator || 'Creator', permissions: data.permissions || ['Permission checked by Roblox on upload'], apiStatus: data.apiStatus || 'READY_FOR_UPLOAD_CHECK' });
       setMessage(data.message || 'Connected');
     } catch (err) {
       setError(err.message || 'Invalid Roblox API Key');
@@ -488,7 +491,7 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
     try {
       const response = await fetch('/api/roblox-api/remove', { method: 'DELETE', credentials: 'include' });
       if (!response.ok) throw new Error('Failed to remove API key');
-      setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Assets', 'Read', 'Write'], apiStatus: 'NOT CONNECTED' });
+      setRobloxApi({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' });
       setMessage('API key removed');
     } catch (err) {
       setError(err.message || 'Unable to remove API key');
@@ -512,11 +515,11 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
         <li>Pada <strong>Resources</strong>, pilih universe/game yang benar. Ini harus game tempat audio akan disimpan.</li>
         <li>Pada <strong>Permissions</strong>, aktifkan <strong>Assets → Read</strong> dan <strong>Assets → Write</strong>. Tanpa <strong>Write</strong>, upload pasti ditolak.</li>
         <li>Klik <strong>Save/Create</strong>, salin API key yang muncul, lalu tempel ke kolom API Key di bawah.</li>
-        <li>Isi <strong>Creator/User ID</strong> pemilik game. Buka profil Roblox pemilik, salin angka ID dari URL profil, contoh: <strong>123456789</strong>.</li>
+        <li>Pilih target <strong>User</strong> untuk akun pribadi atau <strong>Community/Group</strong> untuk komunitas. Masukkan ID target dari URL Roblox, contoh: <strong>123456789</strong>.</li>
         <li>Centang ulang: game benar, permission Read + Write, dan ID angka benar. Baru klik <strong>Connect API</strong>.</li>
       </ol>
       <div className="notice-bar notice-success" style={{ marginTop: 16 }}><ShieldCheck size={16} /> API key tidak boleh dibagikan. Key disimpan terenkripsi dan tidak ditampilkan kembali.</div>
-      <div className="notice-bar notice-error" style={{ marginTop: 10 }}><strong>Jika muncul "Izin ditolak":</strong> hapus key lama, buat key baru dengan resource game dan Assets → Write yang benar, lalu masukkan ulang Creator/User ID.</div>
+      <div className="notice-bar notice-error" style={{ marginTop: 10 }}><strong>Jika muncul "Izin ditolak":</strong> periksa resource experience, Assets → Write, dan ID target. Roblox tidak menyediakan pengecekan permission write umum sebelum operasi upload resmi.</div>
     </div>
     {!robloxApi.connected ? <>
       <label className="field-label" htmlFor="roblox-api-key">Paste your Roblox API Key</label>
@@ -524,15 +527,20 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
         <input id="roblox-api-key" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Roblox API Key" style={{ flex: 1, background: 'transparent', border: 'none', color: '#edf1ec', padding: '14px 0', outline: 'none' }} />
         <button type="button" className="secondary-button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button>
       </div>
-      <label className="field-label" htmlFor="roblox-creator-id" style={{ marginTop: 14 }}>Creator / User ID</label>
-      <input id="roblox-creator-id" value={creatorUserId} onChange={(event) => setCreatorUserId(event.target.value)} placeholder="Contoh: 123456789" inputMode="numeric" />
-      <small className="muted-note">Wajib diisi jika Roblox menolak izin baca atau tidak mengembalikan Creator ID.</small>
+      <label className="field-label" htmlFor="roblox-creator-type" style={{ marginTop: 14 }}>UPLOAD TARGET</label>
+      <select id="roblox-creator-type" value={creatorType} onChange={(event) => setCreatorType(event.target.value)}>
+        <option value="user">Personal User / akun pribadi</option>
+        <option value="group">Community / Group</option>
+      </select>
+      <label className="field-label" htmlFor="roblox-creator-id" style={{ marginTop: 14 }}>{creatorType === 'group' ? 'Community / Group ID' : 'Creator / User ID'}</label>
+      <input id="roblox-creator-id" value={creatorId} onChange={(event) => setCreatorId(event.target.value)} placeholder="Contoh: 123456789" inputMode="numeric" />
+      <small className="muted-note">API key harus memiliki akses Assets pada target yang dipilih.</small>
       <div className="result-actions" style={{ marginTop: 18 }}>
         <button className="primary-button" disabled={busy} onClick={connectApi}>{busy ? 'Connecting...' : 'Connect API'}</button>
       </div>
     </> : <>
       <div className="detail-panel" style={{ padding: 18, borderRadius: 16, background: 'rgba(16,25,20,0.9)', marginBottom: 16 }}>
-        <div className="detail-row"><span>Roblox User ID</span><strong>{robloxApi.userId}</strong></div>
+        <div className="detail-row"><span>{robloxApi.creatorType === 'group' ? 'Community / Group ID' : 'Creator / User ID'}</span><strong>{robloxApi.creatorId || robloxApi.userId}</strong></div>
         <div className="detail-row"><span>Creator</span><strong>{robloxApi.creator}</strong></div>
         <div className="detail-row"><span>API Status</span><strong>{robloxApi.apiStatus}</strong></div>
         <div className="detail-row"><span>Asset Permission</span><strong>{robloxApi.permissions.join(', ')}</strong></div>

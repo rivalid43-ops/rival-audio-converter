@@ -20,7 +20,6 @@ const googleClientId = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 const googleClientSecret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
 const paymentAdminEmail = String(process.env.PAYMENT_ADMIN_EMAIL || 'rivalid43@gmail.com').trim().toLowerCase();
-console.log("GOOGLE_REDIRECT_URI:", process.env.GOOGLE_REDIRECT_URI);
 if (!String(process.env.GOOGLE_REDIRECT_URI || '').trim()) console.error('Google OAuth belum aktif: GOOGLE_REDIRECT_URI wajib diatur di environment variable.');
 if (!publicBaseUrl) console.error('Google OAuth callback belum lengkap: PUBLIC_BASE_URL wajib diatur di environment variable.');
 const configuredSessionSecret = String(process.env.SESSION_SECRET || '').trim();
@@ -29,6 +28,9 @@ if (isProduction && !hasConfiguredSessionSecret) {
   throw new Error('SESSION_SECRET wajib diatur di environment variable saat production.');
 }
 const effectiveSessionSecret = hasConfiguredSessionSecret ? configuredSessionSecret : crypto.randomBytes(32).toString('hex');
+const configuredRobloxKeySecret = String(process.env.ROBLOX_API_KEY_SECRET || '').trim();
+if (isProduction && !configuredRobloxKeySecret) throw new Error('ROBLOX_API_KEY_SECRET wajib diatur di Railway Environment Variables.');
+const effectiveRobloxKeySecret = configuredRobloxKeySecret || crypto.randomBytes(32).toString('hex');
 app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
@@ -52,6 +54,7 @@ const clientDist = path.join(root, 'client', 'dist');
 app.use(express.static(fs.existsSync(clientDist) ? clientDist : root));
 
 const sessions = new Map();
+const robloxApiConnections = new Map();
 const history = [];
 const paymentOrders = [];
 const chatRooms = [];
@@ -154,23 +157,6 @@ const upload = multer({
   fileFilter: (req, file, cb) => cb(null, file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') || /\.(mp3|wav|ogg|m4a|flac|aac|mp4|mov|mkv|webm|avi)$/i.test(file.originalname))
 });
 
-function configReady() {
-  return robloxConfig().missing.length === 0;
-}
-function robloxConfig() {
-  const values = {
-    ROBLOX_CLIENT_ID: process.env.ROBLOX_CLIENT_ID,
-    ROBLOX_CLIENT_SECRET: process.env.ROBLOX_CLIENT_SECRET,
-    ROBLOX_REDIRECT_URI: process.env.ROBLOX_REDIRECT_URI
-  };
-  const missing = Object.entries(values).filter(([, value]) => !String(value || '').trim() || String(value).startsWith('your-')).map(([key]) => key);
-  return { loadedFrom: path.resolve(root, '.env'), missing };
-}
-function robloxMissingMessage(config) {
-  const missing = config.missing.length ? config.missing.join(', ') : 'Tidak ada';
-  const redirectUri = String(process.env.ROBLOX_REDIRECT_URI || 'belum diatur');
-  return `Roblox OAuth belum dikonfigurasi. Isi ROBLOX_CLIENT_ID dan ROBLOX_CLIENT_SECRET sendiri dari aplikasi Roblox OAuth Anda di ${config.loadedFrom}. Redirect URI yang harus dipakai di Roblox App: ${redirectUri}. Variabel yang masih kosong: ${missing}.`;
-}
 function googleReady() {
   return [googleClientId, googleClientSecret, process.env.GOOGLE_REDIRECT_URI, publicBaseUrl].every((value) => value && !value.startsWith('your-') && !value.startsWith('PASTE_'));
 }
@@ -208,111 +194,54 @@ function readSignedCookie(req, name, prefix) {
   if (signature.length !== expected.length) return null;
   return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) ? value : null;
 }
-function robloxCookie(value, maxAge = 30 * 24 * 60 * 60) { return `rival_roblox=${encodeURIComponent(value)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAge}${isProduction ? '; Secure' : ''}`; }
-function robloxSession(req) {
-  const value = readCookie(req, 'rival_roblox');
-  if (!value || !sessionSecret()) return null;
-  const separator = value.lastIndexOf('.'); const sessionId = value.slice(0, separator); const signature = value.slice(separator + 1);
-  if (!sessionId || !signature) return null;
-  const expected = crypto.createHmac('sha256', sessionSecret()).update(`roblox:${sessionId}`).digest('hex');
-  if (signature.length !== expected.length) return null;
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) ? sessions.get(`roblox:${sessionId}`) : null;
-}
-function robloxSessionId(req) {
-  const value = readCookie(req, 'rival_roblox');
-  if (!value) return null;
-  const separator = value.lastIndexOf('.');
-  return separator > 0 ? value.slice(0, separator) : null;
-}
-function signRobloxSession(sessionId) { return `${sessionId}.${crypto.createHmac('sha256', sessionSecret()).update(`roblox:${sessionId}`).digest('hex')}`; }
-function getRobloxServerSession(req) {
-  if (req.session && req.session.roblox && req.session.roblox.accessToken) return req.session.roblox;
-  return robloxSession(req);
-}
-function setRobloxServerSession(req, sessionData) {
-  if (req.session) { req.session.roblox = { ...sessionData, sessionId: sessionData.sessionId || null }; }
-  return sessionData;
-}
-function clearRobloxServerSession(req) {
-  if (req.session) delete req.session.roblox;
-}
-function randomString(size = 32) { return crypto.randomBytes(size).toString('base64url'); }
-function pkceChallenge(verifier) { return crypto.createHash('sha256').update(verifier).digest('base64url'); }
-async function refreshRobloxToken(session) {
-  if (!session?.refreshToken) return false;
-  const body = new URLSearchParams({ client_id: process.env.ROBLOX_CLIENT_ID, client_secret: process.env.ROBLOX_CLIENT_SECRET, grant_type: 'refresh_token', refresh_token: session.refreshToken });
-  const response = await fetch('https://apis.roblox.com/oauth/v1/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  const tokens = await response.json();
-  if (!response.ok || !tokens.access_token) return false;
-  session.accessToken = tokens.access_token; session.refreshToken = tokens.refresh_token || session.refreshToken; session.expiresAt = Date.now() + Number(tokens.expires_in || 3600) * 1000;
-  return true;
-}
-async function robloxFetch(session, url, options = {}) {
-  if (session.expiresAt && session.expiresAt < Date.now() && !(await refreshRobloxToken(session))) return null;
-  let response = await fetch(url, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
-  if (response.status === 401 && await refreshRobloxToken(session)) response = await fetch(url, { ...options, headers: { ...(options.headers || {}), Authorization: `Bearer ${session.accessToken}` } });
-  return response;
-}
 function safeName(value) { return String(value || 'audio').replace(/[^a-z0-9._-]/gi, '-').slice(0, 80); }
-function deriveRobloxApiKeyEncryptionKey() { const base = String(process.env.ROBLOX_API_KEY_SECRET || effectiveSessionSecret || 'rival-open-cloud-api-key'); return crypto.createHash('sha256').update(base).digest(); }
+function deriveRobloxApiKeyEncryptionKey() { return crypto.createHash('sha256').update(effectiveRobloxKeySecret).digest(); }
 function encryptRobloxApiKey(value) {
   const key = deriveRobloxApiKeyEncryptionKey();
   const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(String(value)), cipher.final()]);
-  return `${iv.toString('hex')}:${encrypted.toString('hex')}`;
+  return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${encrypted.toString('hex')}`;
 }
 function decryptRobloxApiKey(value) {
   if (!value) return '';
-  const [ivHex, encryptedHex] = String(value).split(':');
-  if (!ivHex || !encryptedHex) return '';
+  const [ivHex, tagHex, encryptedHex] = String(value).split(':');
+  if (!ivHex || !tagHex || !encryptedHex) return '';
   try {
     const key = deriveRobloxApiKeyEncryptionKey();
-    const decipher = crypto.createDecipheriv('aes-256-cbc', key, Buffer.from(ivHex, 'hex'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+    decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
     return Buffer.concat([decipher.update(Buffer.from(encryptedHex, 'hex')), decipher.final()]).toString('utf8');
   } catch (error) {
     return '';
   }
 }
-function getRobloxApiSession(req) { return req.session?.robloxApi || null; }
-function setRobloxApiSession(req, data) { req.session.robloxApi = data; return data; }
-function clearRobloxApiSession(req) { delete req.session.robloxApi; }
-async function validateRobloxApiKey(rawApiKey) {
-  const apiKey = String(rawApiKey || '').trim();
-  if (!apiKey) return { ok: false, code: 'missing', error: 'API key required.' };
-  if (apiKey.length < 20) return { ok: false, code: 'invalid', error: 'Invalid Roblox API Key' };
-  try {
-    const response = await fetch('https://apis.roblox.com/assets/v1/assets?limit=1', {
-      method: 'GET',
-      headers: { 'x-api-key': apiKey, Accept: 'application/json' }
-    });
-    const text = await response.text();
-    let payload = null;
-    try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
-    if (response.status === 401) return { ok: false, code: 'invalid', error: 'Invalid Roblox API Key' };
-    if (response.status === 403) return { ok: true, code: 'permission-check', userId: 'Unknown', creator: 'Creator', permissions: ['Upload pending verification'], status: 'Key saved', message: 'API key tersimpan. Izin upload akan diverifikasi saat upload audio pertama.' };
-    if (response.status === 429) return { ok: false, code: 'limit', error: 'Upload limit reached.' };
-    if (response.status >= 500) return { ok: false, code: 'unavailable', error: 'Roblox API unavailable.' };
-    if (!response.ok) return { ok: false, code: payload?.code || 'permission', error: payload?.message || payload?.error || 'Permission denied.' };
-    const assets = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : [];
-    const firstAsset = assets[0] || payload || {};
-    const userId = String(firstAsset.creator?.userId || firstAsset.creator?.id || firstAsset.creatorId || firstAsset.creator?.user_id || '').trim() || 'Unknown';
-    const creatorLabel = String(firstAsset.creator?.name || firstAsset.creator?.displayName || firstAsset.creator?.username || 'Creator').trim() || 'Creator';
-    return { ok: true, userId, creator: creatorLabel, permissions: ['Assets', 'Read', 'Write'], status: 'Connected', message: 'Roblox API connected.' };
-  } catch (error) {
-    return { ok: false, code: 'unavailable', error: 'Roblox API unavailable.' };
-  }
+function requireUser(req, res) { if (!req.session?.googleUser?.id) { res.status(401).json({ error: 'Login Google diperlukan sebelum menghubungkan Roblox.' }); return false; } return true; }
+function getRobloxApiSession(req) {
+  const connectionId = req.session?.robloxApiConnectionId;
+  if (!connectionId) return null;
+  const connection = robloxApiConnections.get(connectionId);
+  return connection ? { ...connection, connectionId } : null;
+}
+function setRobloxApiSession(req, data) {
+  const connectionId = crypto.randomUUID();
+  robloxApiConnections.set(connectionId, data);
+  req.session.robloxApiConnectionId = connectionId;
+  return data;
+}
+function clearRobloxApiSession(req) {
+  const connectionId = req.session?.robloxApiConnectionId;
+  if (connectionId) robloxApiConnections.delete(connectionId);
+  delete req.session.robloxApiConnectionId;
 }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 async function pollRobloxOperation(apiKey, operationId) {
   const maxAttempts = 20;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await fetch(`https://apis.roblox.com/assets/v1/operations/${encodeURIComponent(operationId)}`, {
-      method: 'GET',
-      headers: { 'x-api-key': apiKey, Accept: 'application/json' }
-    });
+    const response = await fetchRobloxWithBackoff(`https://apis.roblox.com/assets/v1/operations/${encodeURIComponent(operationId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
     const data = await response.json().catch(() => ({}));
-    if (response.status === 401 || response.status === 403) throw new Error('Invalid Roblox API Key');
+    if (response.status === 401) throw new Error('AUTHENTICATION_INVALID');
+    if (response.status === 403) throw new Error('PERMISSION_OR_RESOURCE_DENIED');
     if (response.status === 429) throw new Error('Upload limit reached.');
     if (response.status >= 500) throw new Error('Roblox API unavailable.');
     if (!response.ok) throw new Error(data?.message || data?.error || 'Roblox moderation failed.');
@@ -322,6 +251,14 @@ async function pollRobloxOperation(apiKey, operationId) {
     await sleep(1500);
   }
   throw new Error('Roblox is still processing this upload. Please try again in a moment.');
+}
+async function fetchRobloxWithBackoff(url, options, maxAttempts = 3) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const response = await fetch(url, options);
+    if (response.status !== 429 || attempt === maxAttempts - 1) return response;
+    await sleep(500 * (2 ** attempt));
+  }
+  return null;
 }
 function runFfmpeg(input, output, args) {
   return new Promise((resolve, reject) => {
@@ -337,7 +274,7 @@ function runFfmpeg(input, output, args) {
 }
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: configReady(), robloxConfig: { loadedFrom: robloxConfig().loadedFrom, missing: robloxConfig().missing }, ffmpeg: ffmpegCommand }));
+app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: Boolean(effectiveRobloxKeySecret), ffmpeg: ffmpegCommand }));
 app.get('/api/usage', async (req, res) => {
   try {
     await paymentDatabaseReady;
@@ -348,7 +285,7 @@ app.get('/api/usage', async (req, res) => {
     res.status(503).json({ error: 'Status penggunaan belum siap.' });
   }
 });
-app.get('/api/session', (req, res) => res.json({ connected: Boolean(authSession(req) || robloxSession(req)), history }));
+app.get('/api/session', (req, res) => res.json({ connected: Boolean(authSession(req) || req.session?.googleUser), history }));
 app.get('/api/payments/plans', (req, res) => {
   res.json([
     { id: '1-year', name: '1 Tahun', price: 'Rp150.000', detail: 'Akses penuh selama 1 tahun', amount: 150000, credits: 100 },
@@ -478,6 +415,7 @@ app.put('/api/profile', (req, res) => {
   req.session.save((error) => error ? res.status(500).json({ error: 'Profil gagal disimpan.' }) : res.json({ ok: true, user: req.session.googleUser }));
 });
 app.get('/api/auth/config', (req, res) => res.json({ googleConfigured: googleReady() }));
+app.get('/api/admin/status', (req, res) => res.json({ isAdmin: isPaymentAdmin(req) }));
 app.post('/api/auth/logout', (req, res) => {
   req.session.destroy(() => { res.setHeader('Set-Cookie', authCookie('', 0)); res.json({ success: true }); });
 });
@@ -602,95 +540,19 @@ app.get('/api/download/:file', (req, res) => {
   res.download(fullPath, file);
 });
 
-app.get('/auth/roblox', (req, res) => {
-  if (!sessionSecret()) return res.status(503).send('SESSION_SECRET belum dikonfigurasi.');
-  const config = robloxConfig();
-  if (config.missing.length) return res.status(503).send(robloxMissingMessage(config));
-  const state = randomString(24); const verifier = randomString(48);
-  sessions.set(`oauth:${state}`, { created: Date.now(), oauth: 'roblox', verifier });
-  const params = new URLSearchParams({ client_id: process.env.ROBLOX_CLIENT_ID, redirect_uri: process.env.ROBLOX_REDIRECT_URI, response_type: 'code', scope: 'openid profile asset:read asset:write', state, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256' });
-  res.redirect(`https://apis.roblox.com/oauth/v1/authorize?${params}`);
-});
-app.get('/auth/roblox/callback', async (req, res) => {
-  const state = sessions.get(`oauth:${req.query.state}`);
-  if (!state || state.oauth !== 'roblox') return res.status(400).send('OAuth state tidak valid. Silakan coba lagi.');
-  sessions.delete(`oauth:${req.query.state}`);
-  if (req.query.error) return res.status(400).send('Login Roblox dibatalkan atau izin asset:read dan asset:write ditolak.');
-  try {
-    const body = new URLSearchParams({ client_id: process.env.ROBLOX_CLIENT_ID, client_secret: process.env.ROBLOX_CLIENT_SECRET, grant_type: 'authorization_code', code: req.query.code, redirect_uri: process.env.ROBLOX_REDIRECT_URI, code_verifier: state.verifier });
-    const tokenResponse = await fetch('https://apis.roblox.com/oauth/v1/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-    const tokens = await tokenResponse.json();
-    if (!tokenResponse.ok) throw new Error(tokens.error_description || 'Token Roblox gagal.');
-    const profileResponse = await fetch('https://apis.roblox.com/oauth/v1/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
-    const profile = await profileResponse.json();
-    if (!profileResponse.ok || !profile.sub) throw new Error('Profil Roblox tidak dapat diverifikasi.');
-    const sessionId = crypto.randomUUID();
-    const sessionData = {
-      sessionId,
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: Date.now() + Number(tokens.expires_in || 3600) * 1000,
-      userId: String(profile.sub),
-      profile: { id: String(profile.sub), username: profile.preferred_username || profile.name || 'Roblox user', displayName: profile.name || profile.preferred_username || 'Roblox user' },
-      created: Date.now()
-    };
-    sessions.set(`roblox:${sessionId}`, sessionData);
-    setRobloxServerSession(req, sessionData);
-    await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
-    res.setHeader('Set-Cookie', robloxCookie(signRobloxSession(sessionId)));
-    if (!publicBaseUrl) return res.status(503).send('PUBLIC_BASE_URL wajib diatur untuk callback Roblox.');
-    const frontendUrl = publicBaseUrl;
-    res.send(`<!doctype html><meta charset="utf-8"><title>Roblox connected</title><script>window.opener?.postMessage({type:'roblox-oauth',status:'success'},${JSON.stringify(frontendUrl)});window.location.replace(${JSON.stringify(`${frontendUrl}/?roblox=success`)});if(window.opener)window.close();</script><p>Roblox connected. You can close this window.</p>`);
-  } catch (error) { res.status(502).send(`Roblox OAuth gagal: ${error.message}`); }
-});
-
-app.get('/api/auth/roblox/me', (req, res) => {
-  const session = getRobloxServerSession(req);
-  if (!session?.profile || !session.userId) return res.status(200).json({ authenticated: false });
-  res.json({ authenticated: true, user: { id: session.userId || session.profile.id, username: session.profile.username, displayName: session.profile.displayName } });
-});
-app.post('/api/auth/roblox/logout', (req, res) => {
-  const sessionId = robloxSessionId(req);
-  if (sessionId) {
-    const session = sessions.get(`roblox:${sessionId}`);
-    if (session) { session.accessToken = null; session.refreshToken = null; session.profile = null; session.userId = null; }
-    sessions.delete(`roblox:${sessionId}`);
-  }
-  clearRobloxServerSession(req);
-  res.setHeader('Set-Cookie', robloxCookie('', 0));
-  res.json({ success: true });
-});
-
-async function handleRobloxUpload(req, res) {
-  const session = getRobloxServerSession(req);
-  if (!session?.accessToken) return res.status(401).json({ error: 'Silakan login dengan Roblox terlebih dahulu.' });
-  if (!req.file) return res.status(400).json({ error: 'File harus berupa audio.' });
-  if (!configReady()) return res.status(503).json({ error: 'Konfigurasi Roblox belum lengkap di server.' });
-  const creatorUserId = String(session.userId || session.profile?.id || '').trim();
-  if (!creatorUserId) return res.status(401).json({ error: 'Profil Roblox tidak tersedia. Silakan login kembali.' });
-  try {
-    const safeDisplayName = safeName(req.body.displayName || req.body.name || req.file.originalname).replace(/\.[^.]+$/, '').slice(0, 50);
-    const form = new FormData();
-    form.append('request', JSON.stringify({ assetType: 'Audio', displayName: safeDisplayName, description: String(req.body.description || process.env.ROBLOX_ASSET_DESCRIPTION || 'Uploaded from Rival Audio Converter').slice(0, 1000), creationContext: { creator: { userId: creatorUserId } } }));
-    form.append('fileContent', new Blob([fs.readFileSync(req.file.path)], { type: req.file.mimetype || 'audio/mpeg' }), req.file.originalname);
-    const response = await robloxFetch(session, 'https://apis.roblox.com/assets/v1/assets', { method: 'POST', body: form });
-    if (!response) return res.status(401).json({ error: 'Sesi Roblox kedaluwarsa. Silakan login kembali.' });
-    const data = await response.json();
-    cleanup(req.file.path);
-    if (!response.ok) return res.status(response.status).json({ error: data.message || 'Roblox menolak upload.', details: data });
-    const item = { id: data.assetId || data.asset?.id, name: req.file.originalname, status: data.path ? 'Pending moderation' : 'Uploaded', createdAt: new Date().toISOString() };
-    if (!item.id) return res.status(202).json({ success: false, status: 'PROCESSING', message: 'Roblox menerima upload, tetapi Asset ID masih diproses.', operationPath: data.path });
-    history.unshift(item);
-    res.json({ success: true, assetId: item.id, robloxUser: { id: creatorUserId, username: session.profile?.username || 'Roblox user' } });
-  } catch (error) { cleanup(req.file.path); res.status(502).json({ error: error.message }); }
-}
 app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) => {
+  if (!requireUser(req, res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   if (!req.file) return res.status(400).json({ success: false, error: 'File harus berupa audio.' });
-  const creatorUserId = String(session?.userId || 'Unknown').trim();
-  if (!creatorUserId || creatorUserId === 'Unknown') return res.status(403).json({ success: false, error: 'Roblox User ID tidak tersedia dari API key yang aktif.' });
+  if (!String(req.file.mimetype || '').startsWith('audio/')) {
+    cleanup(req.file.path);
+    return res.status(400).json({ success: false, error: 'File upload Roblox harus berupa audio.' });
+  }
+  const creatorType = session?.creatorType === 'group' ? 'group' : 'user';
+  const creatorId = String(session?.creatorId || session?.userId || 'Unknown').trim();
+  if (!creatorId || creatorId === 'Unknown') return res.status(403).json({ success: false, error: `${creatorType === 'group' ? 'Community/Group' : 'User'} ID belum diatur.` });
   const safeDisplayName = safeName(req.body.displayName || req.body.name || req.file.originalname).replace(/\.[^.]+$/, '').slice(0, 50) || 'Audio';
   try {
     const form = new FormData();
@@ -698,10 +560,10 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
       assetType: 'Audio',
       displayName: safeDisplayName,
       description: String(req.body.description || process.env.ROBLOX_ASSET_DESCRIPTION || 'Uploaded from Rival Audio Converter').slice(0, 1000),
-      creationContext: { creator: { userId: creatorUserId } }
+      creationContext: { creator: { [`${creatorType}Id`]: creatorId } }
     }));
     form.append('fileContent', new Blob([fs.readFileSync(req.file.path)], { type: req.file.mimetype || 'audio/mpeg' }), req.file.originalname);
-    const uploadResponse = await fetch('https://apis.roblox.com/assets/v1/assets', {
+    const uploadResponse = await fetchRobloxWithBackoff('https://apis.roblox.com/assets/v1/assets', {
       method: 'POST',
       headers: { 'x-api-key': apiKey },
       body: form
@@ -710,8 +572,9 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     cleanup(req.file.path);
     if (!uploadResponse.ok) {
       const message = uploadData?.message || uploadData?.error || 'Roblox menolak upload.';
-      if (uploadResponse.status === 401) return res.status(401).json({ success: false, error: 'Invalid Roblox API Key' });
-      if (uploadResponse.status === 403) return res.status(403).json({ success: false, error: `Izin upload ditolak Roblox: ${message} Pastikan API Key memiliki Assets: Write dan Creator/User ID yang benar.`, details: uploadData });
+      if (uploadResponse.status === 401) return res.status(401).json({ success: false, code: 'AUTHENTICATION_INVALID', error: 'Roblox menolak API key. Pastikan key masih aktif dan dikirim dari server.' });
+      if (uploadResponse.status === 403) return res.status(403).json({ success: false, code: 'PERMISSION_OR_RESOURCE_DENIED', error: `Roblox menolak akses. Periksa permission Assets: Write, resource API key, dan ${creatorType === 'group' ? 'Group ID' : 'User ID'} yang dipilih. Detail Roblox: ${message}` });
+      if (uploadResponse.status === 404) return res.status(404).json({ success: false, code: 'ENDPOINT_OR_RESOURCE_NOT_FOUND', error: 'Endpoint atau resource Roblox tidak ditemukan. Periksa resource API key dan creator ID.' });
       if (uploadResponse.status === 429) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
       if (uploadResponse.status >= 500) return res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
       return res.status(uploadResponse.status).json({ success: false, error: message });
@@ -724,11 +587,12 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
       return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
     }
     history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', createdAt: new Date().toISOString() });
-    res.json({ success: true, assetId, robloxUser: { id: creatorUserId } });
+    res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId } });
   } catch (error) {
     cleanup(req.file.path);
     const message = error.message || 'Roblox API unavailable.';
-    if (message.includes('Invalid Roblox API Key')) return res.status(401).json({ success: false, error: 'Invalid Roblox API Key' });
+    if (message.includes('AUTHENTICATION_INVALID')) return res.status(401).json({ success: false, code: 'AUTHENTICATION_INVALID', error: 'Roblox menolak API key. Pastikan key masih aktif dan dikirim dari server.' });
+    if (message.includes('PERMISSION_OR_RESOURCE_DENIED')) return res.status(403).json({ success: false, code: 'PERMISSION_OR_RESOURCE_DENIED', error: `Roblox menolak permission atau resource. Periksa Assets: Write, resource API key, dan ${creatorType === 'group' ? 'Group ID' : 'User ID'}.` });
     if (message.includes('Upload limit reached')) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
     if (message.includes('Roblox moderation failed')) return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
     if (message.includes('still processing')) return res.status(202).json({ success: false, error: 'Roblox is still processing this upload. Please try again in a moment.' });
@@ -736,6 +600,7 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
   }
 });
 app.get('/api/roblox/assets/:id', async (req, res) => {
+  if (!requireUser(req, res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ error: 'Connect Roblox API terlebih dahulu.' });
@@ -744,24 +609,25 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
   res.status(response.status).json(payload);
 });
 app.post('/api/roblox-api/connect', async (req, res) => {
+  if (!requireUser(req, res)) return;
   const apiKey = String(req.body.apiKey || '').trim();
-  const creatorUserId = String(req.body.creatorUserId || '').trim();
+  const creatorType = req.body.creatorType === 'group' ? 'group' : 'user';
+  const creatorId = String(req.body.creatorId || '').trim();
   if (!apiKey) return res.status(400).json({ ok: false, error: 'Paste your Roblox API Key' });
-  if (creatorUserId && !/^\d+$/.test(creatorUserId)) return res.status(400).json({ ok: false, error: 'Creator/User ID harus berupa angka.' });
-  const validation = await validateRobloxApiKey(apiKey);
-  if (!validation.ok) return res.status(401).json({ ok: false, error: validation.error || 'Invalid Roblox API Key' });
-  const resolvedUserId = validation.userId !== 'Unknown' ? validation.userId : creatorUserId;
-  if (!resolvedUserId) return res.status(400).json({ ok: false, error: 'Roblox tidak mengembalikan Creator ID. Isi Creator/User ID dari pemilik game lalu Connect API lagi.' });
+  if (!creatorId) return res.status(400).json({ ok: false, error: `${creatorType === 'group' ? 'Community/Group' : 'Creator/User'} ID wajib diisi.` });
+  if (!/^\d+$/.test(creatorId)) return res.status(400).json({ ok: false, error: 'ID Roblox harus berupa angka.' });
   setRobloxApiSession(req, {
     encryptedKey: encryptRobloxApiKey(apiKey),
-    userId: resolvedUserId,
-    creator: validation.creator || 'Creator',
-    permissions: validation.permissions || ['Assets', 'Read', 'Write'],
-    apiStatus: validation.status || 'Connected',
+    creatorType,
+    creatorId,
+    userId: creatorType === 'user' ? creatorId : 'Unknown',
+    creator: creatorType === 'group' ? 'Community/Group' : 'Personal User',
+    permissions: ['Assets: Write pending Roblox preflight'],
+    apiStatus: 'READY_FOR_UPLOAD_CHECK',
     connected: true,
     connectedAt: new Date().toISOString()
   });
-  res.json({ ok: true, connected: true, userId: resolvedUserId, creator: validation.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: validation.status || 'Connected', message: validation.message || '' });
+  res.json({ ok: true, connected: true, creatorType, creatorId, userId: creatorType === 'user' ? creatorId : 'Unknown', creator: creatorType === 'group' ? 'Community/Group' : 'Personal User', permissions: ['Assets: Write pending Roblox preflight'], apiStatus: 'READY_FOR_UPLOAD_CHECK', message: 'API key tersimpan aman di memory server. Permission dan resource akan diverifikasi oleh endpoint upload resmi Roblox.' });
 });
 app.get('/api/roblox-api/session', (req, res) => {
   const session = getRobloxApiSession(req);
@@ -770,31 +636,33 @@ app.get('/api/roblox-api/session', (req, res) => {
   if (!apiKey) return res.json({ connected: false, apiStatus: 'NOT CONNECTED' });
   const payload = {
     connected: true,
+    creatorType: session.creatorType || 'user',
+    creatorId: session.creatorId || session.userId || 'Unknown',
     userId: session.userId || 'Unknown',
     creator: session.creator || 'Creator',
     permissions: session.permissions || ['Assets', 'Read', 'Write'],
-    apiStatus: validation.status || 'Connected',
+    apiStatus: session.apiStatus || 'Connected',
     connectedAt: session.connectedAt || new Date().toISOString()
   };
   res.json(payload);
 });
 app.post('/api/roblox-api/test', async (req, res) => {
+  if (!requireUser(req, res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ ok: false, error: 'Connect Roblox API terlebih dahulu.' });
-  const validation = await validateRobloxApiKey(apiKey);
-  if (!validation.ok) return res.status(401).json({ ok: false, error: validation.error || 'Invalid Roblox API Key' });
   setRobloxApiSession(req, {
     ...session,
-    userId: validation.userId || session.userId || 'Unknown',
-    creator: validation.creator || session.creator || 'Creator',
-    permissions: validation.permissions || ['Assets', 'Read', 'Write'],
-    apiStatus: 'Connected',
+    userId: session.userId || 'Unknown',
+    creator: session.creator || 'Creator',
+    permissions: session.permissions || ['Assets: Write pending Roblox preflight'],
+    apiStatus: 'READY_FOR_UPLOAD_CHECK',
     connected: true
   });
-  res.json({ ok: true, connected: true, userId: validation.userId || session.userId || 'Unknown', creator: validation.creator || session.creator || 'Creator', permissions: validation.permissions || ['Assets', 'Read', 'Write'], apiStatus: validation.status || 'Connected', message: validation.message || '' });
+  res.json({ ok: true, connected: true, creatorType: session.creatorType || 'user', creatorId: session.creatorId || session.userId || 'Unknown', userId: session.userId || 'Unknown', creator: session.creator || 'Creator', permissions: session.permissions || ['Assets: Write pending Roblox preflight'], apiStatus: 'READY_FOR_UPLOAD_CHECK', message: 'Credential tersimpan di server dan siap diuji oleh upload resmi Roblox.' });
 });
 app.delete('/api/roblox-api/remove', (req, res) => {
+  if (!requireUser(req, res)) return;
   clearRobloxApiSession(req);
   res.json({ ok: true, connected: false, apiStatus: 'NOT CONNECTED' });
 });
