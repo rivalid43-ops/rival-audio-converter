@@ -59,6 +59,7 @@ const history = [];
 const paymentOrders = [];
 const chatRooms = [];
 const outputOwners = new Map();
+const robloxOperations = new Map();
 const paymentDatabase = new sqlite3.Database(paymentDatabaseFile);
 function databaseRun(sql, parameters = []) {
   return new Promise((resolve, reject) => paymentDatabase.run(sql, parameters, function onRun(error) { if (error) reject(error); else resolve(this); }));
@@ -119,6 +120,9 @@ async function initializePaymentDatabase() {
   await databaseRun(`CREATE TABLE IF NOT EXISTS feature_usage (
     usage_key TEXT PRIMARY KEY, usage_count INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
   )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS usage_events (
+    event_key TEXT PRIMARY KEY, usage_key TEXT NOT NULL, route TEXT NOT NULL, created_at TEXT NOT NULL
+  )`);
   await databaseRun(`CREATE TABLE IF NOT EXISTS credit_balances (
     customer_email TEXT PRIMARY KEY, credits INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
   )`);
@@ -165,26 +169,48 @@ async function initializePaymentDatabase() {
 const paymentDatabaseReady = initializePaymentDatabase().catch((error) => { console.error('Payment database initialization failed:', error); throw error; });
 const usageLimit = 5;
 function usageKey(req) { return requestEmail(req) || `ip:${req.ip}`; }
-async function consumeUsage(req) {
-  if (isPaymentAdmin(req)) return { allowed: true, used: 0, limit: null };
+async function getActiveSubscription(email) {
+  if (!email) return null;
+  const rows = await databaseAll('SELECT * FROM user_subscriptions WHERE email = ? ORDER BY expiry_date DESC LIMIT 1', [email]);
+  const subscription = rows[0];
+  if (!subscription) return null;
+  if (subscription.status !== 'ACTIVE' || new Date(subscription.expiry_date).getTime() <= Date.now()) {
+    if (subscription.status === 'ACTIVE') await databaseRun('UPDATE user_subscriptions SET status = ?, updated_at = ? WHERE id = ?', ['EXPIRED', new Date().toISOString(), subscription.id]);
+    return null;
+  }
+  return subscription;
+}
+async function getUsageState(req) {
   await paymentDatabaseReady;
   const key = usageKey(req);
   await databaseRun('INSERT OR IGNORE INTO feature_usage (usage_key, usage_count, updated_at) VALUES (?, 0, ?)', [key, new Date().toISOString()]);
   const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [key]);
   const used = Number(rows[0]?.usage_count || 0);
-  const freeUse = await databaseRun('UPDATE feature_usage SET usage_count = usage_count + 1, updated_at = ? WHERE usage_key = ? AND usage_count < ?', [new Date().toISOString(), key, usageLimit]);
-  if (freeUse.changes === 1) return { allowed: true, used: used + 1, limit: usageLimit, source: 'free' };
-  const email = requestEmail(req);
-  const creditUse = await databaseRun('UPDATE credit_balances SET credits = credits - 1, updated_at = ? WHERE customer_email = ? AND credits > 0', [new Date().toISOString(), email]);
-  if (creditUse.changes === 1) return { allowed: true, used, limit: usageLimit, source: 'credit' };
-  return { allowed: false, used, limit: usageLimit, source: 'none' };
+  const subscription = await getActiveSubscription(requestEmail(req));
+  if (isPaymentAdmin(req) || subscription) return { allowed: true, used, limit: null, unlimited: true, planName: subscription?.plan_name || 'Admin' };
+  return { allowed: used < usageLimit, used, limit: usageLimit, freeRemaining: Math.max(0, usageLimit - used), unlimited: false, source: 'free' };
+}
+async function commitUsage(req) {
+  if (req.usageState?.unlimited || !req.usageState?.allowed) return req.usageState;
+  const eventKey = req.get('Idempotency-Key') || req.get('X-Request-ID');
+  if (!eventKey) return req.usageState;
+  await paymentDatabaseReady;
+  const result = await databaseRun('INSERT OR IGNORE INTO usage_events (event_key, usage_key, route, created_at) VALUES (?, ?, ?, ?)', [eventKey, usageKey(req), req.path, new Date().toISOString()]);
+  if (result.changes !== 1) return req.usageState;
+  await databaseRun('UPDATE feature_usage SET usage_count = usage_count + 1, updated_at = ? WHERE usage_key = ? AND usage_count < ?', [new Date().toISOString(), usageKey(req), usageLimit]);
+  const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [usageKey(req)]);
+  return { ...req.usageState, used: Number(rows[0]?.usage_count || 0), freeRemaining: Math.max(0, usageLimit - Number(rows[0]?.usage_count || 0)) };
 }
 async function usageGuard(req, res, next) {
   try {
-    const usage = await consumeUsage(req);
-    if (!usage.allowed) return res.status(429).json({ error: 'Batas gratis 5 kali sudah tercapai. Silakan beli credits untuk melanjutkan.', usage });
+    const usage = await getUsageState(req);
+    if (!usage.allowed) return res.status(429).json({ error: 'Free limit kamu sudah habis. Kamu sudah menggunakan 5 dari 5 upload gratis. Beli Plan untuk melanjutkan.', code: 'FREE_LIMIT_REACHED', usage });
+    req.usageState = usage;
     res.setHeader('X-Usage-Count', String(usage.used));
     if (usage.limit) res.setHeader('X-Usage-Limit', String(usage.limit));
+    res.once('finish', () => {
+      if (res.statusCode === 200 || res.statusCode === 201) commitUsage(req).catch((error) => console.error('Usage commit failed:', error));
+    });
     next();
   } catch (error) {
     console.error('Usage limit check failed:', error);
@@ -364,13 +390,12 @@ function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force
 app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: robloxKeySecretReady, ffmpeg: ffmpegCommand }));
 app.get('/api/usage', async (req, res) => {
   try {
+    if (!requestEmail(req)) return res.status(401).json({ error: 'Login diperlukan.' });
     await paymentDatabaseReady;
-    if (isPaymentAdmin(req)) return res.json({ used: 0, limit: null, unlimited: true });
-    const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [usageKey(req)]);
+    const usage = await getUsageState(req);
     const creditRows = await databaseAll('SELECT credits FROM credit_balances WHERE customer_email = ?', [requestEmail(req)]);
-    const used = Number(rows[0]?.usage_count || 0);
-    const credits = Number(creditRows[0]?.credits || 0);
-    res.json({ used, limit: usageLimit, freeRemaining: Math.max(0, usageLimit - used), credits, unlimited: false });
+    const subscription = await getActiveSubscription(requestEmail(req));
+    res.json({ ...usage, credits: Number(creditRows[0]?.credits || 0), subscription: subscription ? { planName: subscription.plan_name, expiryDate: subscription.expiry_date, status: 'ACTIVE' } : null });
   } catch (error) {
     res.status(503).json({ error: 'Status penggunaan belum siap.' });
   }
@@ -835,13 +860,15 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
       return res.status(uploadResponse.status).json({ success: false, error: message });
     }
     const operationId = uploadData?.operationId || uploadData?.id || uploadData?.operation?.id || (typeof uploadData?.path === 'string' ? uploadData.path.split('/').pop() : '');
-    if (!operationId) return res.status(202).json({ success: false, error: 'Roblox menerima upload, tetapi operation ID belum tersedia.' });
+    if (!operationId) return res.status(202).json({ success: false, pending: true, error: 'Roblox menerima upload, tetapi operation ID belum tersedia.' });
+    robloxOperations.set(operationId, { ownerEmail: requestEmail(req), originalName: req.file.originalname, remixMetadata });
     const operationResult = await pollRobloxOperation(apiKey, operationId);
     const assetId = Number(operationResult?.result?.assetId || operationResult?.assetId || operationResult?.result?.id || operationResult?.id || 0);
     if (!assetId) {
       return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
     }
     history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
+    robloxOperations.delete(operationId);
     res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
   } catch (error) {
     cleanup(req.file.path);
@@ -850,8 +877,36 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     if (message.includes('PERMISSION_OR_RESOURCE_DENIED')) return res.status(403).json({ success: false, code: 'PERMISSION_OR_RESOURCE_DENIED', error: `Roblox menolak permission atau resource. Periksa Assets: Write, resource API key, dan ${creatorType === 'group' ? 'Group ID' : 'User ID'}.` });
     if (message.includes('Upload limit reached')) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
     if (message.includes('Roblox moderation failed')) return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
-    if (message.includes('still processing')) return res.status(202).json({ success: false, error: 'Roblox is still processing this upload. Please try again in a moment.' });
+    if (message.includes('still processing')) return res.status(202).json({ success: false, pending: true, operationId, error: 'Roblox is still processing this upload.' });
     res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
+  }
+});
+app.get('/api/roblox/operations/:id', async (req, res) => {
+  if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
+  const operationId = String(req.params.id || '').trim();
+  const operation = robloxOperations.get(operationId);
+  if (!operation || operation.ownerEmail !== requestEmail(req)) return res.status(404).json({ success: false, error: 'Operation upload tidak ditemukan atau sudah kedaluwarsa.' });
+  const session = getRobloxApiSession(req);
+  const apiKey = decryptRobloxApiKey(session?.encryptedKey);
+  if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
+  try {
+    const response = await fetchRobloxWithBackoff(`https://apis.roblox.com/assets/v1/operations/${encodeURIComponent(operationId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return res.status(response.status).json({ success: false, error: data?.message || data?.error || 'Roblox operation gagal.' });
+    const state = String(data.status || data.state || '').toLowerCase();
+    if (['failed', 'cancelled', 'canceled'].includes(state)) {
+      robloxOperations.delete(operationId);
+      return res.status(400).json({ success: false, error: data?.message || 'Roblox moderation failed.' });
+    }
+    if (!['completed', 'succeeded', 'success'].includes(state)) return res.status(202).json({ success: false, pending: true, operationId });
+    const assetId = Number(data?.result?.assetId || data?.assetId || data?.result?.id || data?.id || 0);
+    if (!assetId) return res.status(202).json({ success: false, pending: true, operationId });
+    history.unshift({ id: assetId, name: operation.originalName, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata: operation.remixMetadata });
+    robloxOperations.delete(operationId);
+    return res.json({ success: true, assetId, remixMetadata: operation.remixMetadata });
+  } catch (error) {
+    return res.status(503).json({ success: false, error: error.message || 'Roblox API unavailable.' });
   }
 });
 app.get('/api/roblox/assets/:id', async (req, res) => {

@@ -376,3 +376,161 @@
     grid-template-columns: 1fr;
   }
 }
+
+.converter-usage-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.free-upload-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 15px;
+  border: 1px solid rgba(200, 247, 110, 0.18);
+  background: rgba(200, 247, 110, 0.05);
+}
+
+.free-upload-status strong {
+  color: #c8f76e;
+  font-size: 12px;
+}
+
+.free-upload-status span {
+  color: var(--muted);
+  font: 10px 'DM Mono';
+}
+
+.free-limit-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 133, 109, 0.35);
+  background: rgba(255, 133, 109, 0.08);
+}
+
+.free-limit-panel div {
+  display: grid;
+  gap: 6px;
+}
+
+.free-limit-panel strong {
+  color: #ffb09e;
+}
+
+.free-limit-panel span {
+  color: var(--muted);
+  font: 10px 'DM Mono';
+}
+
+.converter-limit-reached .convert-button {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.converter-limit-reached .drop-area {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+@media (max-width: 720px) {
+  .free-upload-status,
+  .free-limit-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.billing-plan-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 24px 0 12px;
+}
+
+.billing-plan-heading h3 {
+  margin: 8px 0 0;
+  font-size: 20px;
+}
+
+.billing-plan-notice {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 193, 111, 0.35);
+  background: rgba(255, 193, 111, 0.08);
+  color: #ffd08a;
+  font: 10px/1.5 'DM Mono';
+}
+
+.billing-page .plan-grid {
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+  align-items: stretch;
+}
+
+.billing-page .plan-option {
+  min-height: 390px;
+  padding: 26px;
+  cursor: pointer;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.billing-page .plan-option:hover,
+.billing-page .plan-option:focus-within {
+  transform: translateY(-4px);
+  border-color: #c8f76e;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+}
+
+.billing-page .plan-option h3 {
+  margin: 20px 0 12px;
+  font-size: 21px;
+}
+
+.billing-page .plan-price {
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.billing-page .plan-description {
+  min-height: 42px;
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.billing-page .plan-benefits {
+  min-height: 54px;
+}
+
+.billing-page .plan-buy {
+  width: 100%;
+  min-height: 44px;
+  justify-content: center;
+  margin-top: auto;
+}
+
+@media (max-width: 1050px) {
+  .billing-page .plan-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .billing-plan-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .billing-page .plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-page .plan-option {
+    min-height: 330px;
+  }
+}
