@@ -51,13 +51,14 @@ app.use(session({
   cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
 const clientDist = path.join(root, 'client', 'dist');
-app.use(express.static(fs.existsSync(clientDist) ? clientDist : root));
+if (fs.existsSync(clientDist)) app.use(express.static(clientDist, { dotfiles: 'deny', index: false }));
 
 const sessions = new Map();
 const robloxApiConnections = new Map();
 const history = [];
 const paymentOrders = [];
 const chatRooms = [];
+const outputOwners = new Map();
 const paymentDatabase = new sqlite3.Database(paymentDatabaseFile);
 function databaseRun(sql, parameters = []) {
   return new Promise((resolve, reject) => paymentDatabase.run(sql, parameters, function onRun(error) { if (error) reject(error); else resolve(this); }));
@@ -87,6 +88,10 @@ async function initializePaymentDatabase() {
   await databaseRun(`CREATE TABLE IF NOT EXISTS credit_grants (
     order_id TEXT PRIMARY KEY, customer_email TEXT NOT NULL, credits INTEGER NOT NULL, granted_at TEXT NOT NULL
   )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS payment_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1), payment_target TEXT NOT NULL, qr_image TEXT, updated_at TEXT NOT NULL
+  )`);
+  await databaseRun('INSERT OR IGNORE INTO payment_settings (id, payment_target, qr_image, updated_at) VALUES (1, ?, ?, ?)', [String(process.env.PAYMENT_TARGET || 'Transfer manual - tujuan pembayaran belum diatur admin'), String(process.env.PAYMENT_QR_FILE || 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg'), new Date().toISOString()]);
   const orders = await databaseAll('SELECT * FROM payment_orders ORDER BY created_at DESC');
   const messages = await databaseAll('SELECT order_id, sender, text, sent_at FROM payment_messages ORDER BY id ASC');
   paymentOrders.push(...orders.map((item) => ({ id: item.id, orderNumber: item.order_number, customerName: item.customer_name, customerEmail: item.customer_email, planName: item.plan_name, amount: item.amount, credits: item.credits || 0, status: item.status, createdAt: item.created_at, paymentTarget: item.payment_target, qrImage: item.qr_image, notes: item.notes, proofUrl: item.proof_url, uploadedAt: item.uploaded_at, adminNotes: item.admin_notes })));
@@ -103,16 +108,20 @@ async function consumeUsage(req) {
   if (isPaymentAdmin(req)) return { allowed: true, used: 0, limit: null };
   await paymentDatabaseReady;
   const key = usageKey(req);
+  await databaseRun('INSERT OR IGNORE INTO feature_usage (usage_key, usage_count, updated_at) VALUES (?, 0, ?)', [key, new Date().toISOString()]);
   const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [key]);
   const used = Number(rows[0]?.usage_count || 0);
-  if (used >= usageLimit) return { allowed: false, used, limit: usageLimit };
-  await databaseRun('INSERT INTO feature_usage (usage_key, usage_count, updated_at) VALUES (?, 1, ?) ON CONFLICT(usage_key) DO UPDATE SET usage_count = usage_count + 1, updated_at = excluded.updated_at', [key, new Date().toISOString()]);
-  return { allowed: true, used: used + 1, limit: usageLimit };
+  const freeUse = await databaseRun('UPDATE feature_usage SET usage_count = usage_count + 1, updated_at = ? WHERE usage_key = ? AND usage_count < ?', [new Date().toISOString(), key, usageLimit]);
+  if (freeUse.changes === 1) return { allowed: true, used: used + 1, limit: usageLimit, source: 'free' };
+  const email = requestEmail(req);
+  const creditUse = await databaseRun('UPDATE credit_balances SET credits = credits - 1, updated_at = ? WHERE customer_email = ? AND credits > 0', [new Date().toISOString(), email]);
+  if (creditUse.changes === 1) return { allowed: true, used, limit: usageLimit, source: 'credit' };
+  return { allowed: false, used, limit: usageLimit, source: 'none' };
 }
 async function usageGuard(req, res, next) {
   try {
     const usage = await consumeUsage(req);
-    if (!usage.allowed) return res.status(429).json({ error: 'Batas penggunaan 5 kali sudah tercapai.', usage });
+    if (!usage.allowed) return res.status(429).json({ error: 'Batas gratis 5 kali sudah tercapai. Silakan beli credits untuk melanjutkan.', usage });
     res.setHeader('X-Usage-Count', String(usage.used));
     if (usage.limit) res.setHeader('X-Usage-Limit', String(usage.limit));
     next();
@@ -150,12 +159,28 @@ setInterval(() => {
 app.use(['/api/payments', '/api/chats'], async (req, res, next) => {
   try { await paymentDatabaseReady; next(); } catch (error) { res.status(503).json({ error: 'Database pembayaran belum siap.' }); }
 });
-app.use(['/api/youtube/validate', '/api/convert', '/api/optimize', '/api/remix', '/api/roblox/upload-audio'], usageGuard);
+app.use(['/api/youtube/validate', '/api/convert', '/api/optimize', '/api/remix', '/api/roblox/upload-audio'], (req, res, next) => {
+  if (!requireUser(req, res)) return;
+  usageGuard(req, res, next);
+});
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => cb(null, file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') || /\.(mp3|wav|ogg|m4a|flac|aac|mp4|mov|mkv|webm|avi)$/i.test(file.originalname))
 });
+const imageUpload = multer({
+  dest: uploadDir,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /^image\/(png|jpe?g|webp)$/.test(file.mimetype))
+});
+async function getPaymentSettings() {
+  await paymentDatabaseReady;
+  const rows = await databaseAll('SELECT payment_target, qr_image, updated_at FROM payment_settings WHERE id = 1');
+  return rows[0] || { payment_target: '', qr_image: '', updated_at: null };
+}
+function paymentSettingsPayload(settings) {
+  return { paymentTarget: settings.payment_target, qrUrl: settings.qr_image ? '/api/payments/qr' : null, updatedAt: settings.updated_at };
+}
 
 function googleReady() {
   return [googleClientId, googleClientSecret, process.env.GOOGLE_REDIRECT_URI, publicBaseUrl].every((value) => value && !value.startsWith('your-') && !value.startsWith('PASTE_'));
@@ -281,18 +306,81 @@ app.get('/api/usage', async (req, res) => {
     await paymentDatabaseReady;
     if (isPaymentAdmin(req)) return res.json({ used: 0, limit: null, unlimited: true });
     const rows = await databaseAll('SELECT usage_count FROM feature_usage WHERE usage_key = ?', [usageKey(req)]);
-    res.json({ used: Number(rows[0]?.usage_count || 0), limit: usageLimit, unlimited: false });
+    const creditRows = await databaseAll('SELECT credits FROM credit_balances WHERE customer_email = ?', [requestEmail(req)]);
+    const used = Number(rows[0]?.usage_count || 0);
+    const credits = Number(creditRows[0]?.credits || 0);
+    res.json({ used, limit: usageLimit, freeRemaining: Math.max(0, usageLimit - used), credits, unlimited: false });
   } catch (error) {
     res.status(503).json({ error: 'Status penggunaan belum siap.' });
   }
 });
-app.get('/api/session', (req, res) => res.json({ connected: Boolean(authSession(req) || req.session?.googleUser), history }));
+app.get('/api/session', (req, res) => {
+  const email = requestEmail(req);
+  if (!email) return res.status(401).json({ error: 'Login diperlukan.' });
+  res.json({ connected: true, history: history.filter((item) => item.ownerEmail === email) });
+});
+const paymentPlans = {
+  '1-month': { id: '1-month', name: '1 Bulan', price: 'Rp100.000', detail: 'Akses 1 bulan + 100 credits', amount: 100000, credits: 100 },
+  '2-month': { id: '2-month', name: '2 Bulan', price: 'Rp180.000', detail: 'Akses 2 bulan + 200 credits', amount: 180000, credits: 200 },
+  '3-month': { id: '3-month', name: '3 Bulan', price: 'Rp380.000', detail: 'Akses 3 bulan + 400 credits', amount: 380000, credits: 400 },
+  '1-year': { id: '1-year', name: '1 Tahun', price: 'Rp800.000', detail: 'Akses 1 tahun + 1.500 credits', amount: 800000, credits: 1500 },
+  team: { id: 'team', name: 'Join Team', price: 'Rp1.800.000', detail: 'Akses team + 4.000 credits', amount: 1800000, credits: 4000 }
+};
 app.get('/api/payments/plans', (req, res) => {
-  res.json([
-    { id: '1-year', name: '1 Tahun', price: 'Rp150.000', detail: 'Akses penuh selama 1 tahun', amount: 150000, credits: 100 },
-    { id: '2-year', name: '2 Tahun', price: 'Rp340.000', detail: 'Akses penuh selama 2 tahun', amount: 340000, credits: 300 },
-    { id: 'team', name: 'Join Team', price: 'Rp1.000.000', detail: 'Akses penuh selama 1 tahun', amount: 1000000, credits: 1000 }
-  ]);
+  res.json(Object.values(paymentPlans));
+});
+app.get('/api/payments/config', async (req, res) => {
+  try {
+    const settings = await getPaymentSettings();
+    res.json(paymentSettingsPayload(settings));
+  } catch (error) {
+    res.status(503).json({ error: 'Konfigurasi pembayaran belum siap.' });
+  }
+});
+app.get('/api/payments/qr', async (req, res) => {
+  try {
+    const settings = await getPaymentSettings();
+    const fileName = path.basename(String(settings.qr_image || ''));
+    const candidates = [path.join(uploadDir, fileName), path.join(root, fileName)].filter(Boolean);
+    const filePath = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!filePath) return res.status(404).json({ error: 'QR pembayaran belum diatur admin.' });
+    res.sendFile(filePath);
+  } catch (error) {
+    res.status(503).json({ error: 'QR pembayaran belum siap.' });
+  }
+});
+app.get('/api/admin/payment-settings', async (req, res) => {
+  if (!isPaymentAdmin(req)) return res.status(403).json({ error: 'Khusus admin pembayaran.' });
+  try {
+    res.json(paymentSettingsPayload(await getPaymentSettings()));
+  } catch (error) {
+    res.status(503).json({ error: 'Konfigurasi pembayaran belum siap.' });
+  }
+});
+app.put('/api/admin/payment-settings', async (req, res) => {
+  if (!isPaymentAdmin(req)) return res.status(403).json({ error: 'Khusus admin pembayaran.' });
+  const paymentTarget = String(req.body?.paymentTarget || '').trim().slice(0, 500);
+  if (!paymentTarget) return res.status(400).json({ error: 'Tujuan pembayaran wajib diisi.' });
+  try {
+    await databaseRun('UPDATE payment_settings SET payment_target = ?, updated_at = ? WHERE id = 1', [paymentTarget, new Date().toISOString()]);
+    res.json(paymentSettingsPayload(await getPaymentSettings()));
+  } catch (error) {
+    res.status(503).json({ error: 'Konfigurasi pembayaran gagal disimpan.' });
+  }
+});
+app.post('/api/admin/payment-settings/qr', imageUpload.single('qr'), async (req, res) => {
+  if (!isPaymentAdmin(req)) {
+    if (req.file) cleanup(req.file.path);
+    return res.status(403).json({ error: 'Khusus admin pembayaran.' });
+  }
+  if (!req.file) return res.status(400).json({ error: 'File QR PNG, JPG, atau WEBP wajib diunggah.' });
+  try {
+    await databaseRun('UPDATE payment_settings SET qr_image = ?, updated_at = ? WHERE id = 1', [path.basename(req.file.filename), new Date().toISOString()]);
+    res.json(paymentSettingsPayload(await getPaymentSettings()));
+  } catch (error) {
+    cleanup(req.file.path);
+    res.status(503).json({ error: 'QR pembayaran gagal disimpan.' });
+  }
 });
 app.get('/api/credits', async (req, res) => {
   const email = requestEmail(req);
@@ -317,26 +405,26 @@ app.get('/api/admin/payments', async (req, res) => {
   }
 });
 app.post('/api/payments/create', async (req, res) => {
-  const plan = req.body && req.body.plan ? req.body.plan : null;
+  const planId = String(req.body?.planId || req.body?.plan?.id || '').trim();
+  const plan = paymentPlans[planId];
   const customerName = String(req.session?.googleUser?.name || req.body?.customerName || 'Customer').trim();
   const customerEmail = requestEmail(req);
-  const amount = Number(plan?.amount || req.body?.amount || 0);
-  const credits = Math.max(0, Number(plan?.credits || 0));
   if (!customerEmail) return res.status(401).json({ error: 'Login diperlukan untuk membuat order.' });
-  if (!plan || !plan.name || !amount) return res.status(400).json({ error: 'Paket tidak valid.' });
-  const orderNumber = `RIVAL-${Date.now().toString().slice(-8)}`;
+  if (!plan) return res.status(400).json({ error: 'Paket tidak valid.' });
+  const paymentSettings = await getPaymentSettings();
+  const orderNumber = `RIVAL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
   const order = {
     id: `${orderNumber}`,
     orderNumber,
     customerName,
     customerEmail,
     planName: plan.name,
-    amount,
-    credits,
+    amount: plan.amount,
+    credits: plan.credits,
     status: 'waiting_payment',
     createdAt: new Date().toISOString(),
-    paymentTarget: 'BCA 1234567890 a.n Rival Dev',
-    qrImage: '/images/payment-qr.png',
+    paymentTarget: paymentSettings.payment_target,
+    qrImage: paymentSettings.qr_image ? '/api/payments/qr' : null,
     notes: '',
     proofUrl: null,
     adminNotes: ''
@@ -345,10 +433,11 @@ app.post('/api/payments/create', async (req, res) => {
   await savePaymentData();
   res.json(order);
 });
-app.post('/api/payments/:id/proof', upload.single('proof'), async (req, res) => {
+app.post('/api/payments/:id/proof', imageUpload.single('proof'), async (req, res) => {
   const order = paymentOrders.find((item) => item.id === req.params.id || item.orderNumber === req.params.id);
-  if (!order) return res.status(404).json({ error: 'Order tidak ditemukan.' });
-  if (!canAccessPayment(req, order)) return res.status(403).json({ error: 'Anda tidak memiliki akses ke order ini.' });
+  if (!order) { cleanup(req.file?.path); return res.status(404).json({ error: 'Order tidak ditemukan.' }); }
+  if (!canAccessPayment(req, order)) { cleanup(req.file?.path); return res.status(403).json({ error: 'Anda tidak memiliki akses ke order ini.' }); }
+  if (order.status === 'approved') { cleanup(req.file?.path); return res.status(409).json({ error: 'Order yang sudah disetujui tidak dapat diubah.' }); }
   if (!req.file) return res.status(400).json({ error: 'Bukti pembayaran wajib diunggah.' });
   order.proofUrl = `/api/download-proof/${encodeURIComponent(req.file.filename)}`;
   order.notes = String(req.body.notes || '').trim();
@@ -480,6 +569,7 @@ app.post('/api/convert', upload.single('audio'), async (req, res) => {
     await runFfmpeg(req.file.path, output, args);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
+    outputOwners.set(`${id}.${format}`, requestEmail(req));
     res.json({ id, name: `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}.${format}`, format, size: stat.size, downloadUrl: `/api/download/${id}.${format}` });
   } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
 });
@@ -491,6 +581,7 @@ app.post('/api/optimize', upload.single('audio'), async (req, res) => {
     await runFfmpeg(req.file.path, output, ['-filter:a', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-codec:a', 'libmp3lame', '-b:a', '192k']);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
+    outputOwners.set(`${id}.mp3`, requestEmail(req));
     const name = `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}-optimized.mp3`;
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
     res.json({ id, name, size: stat.size, downloadUrl: `/api/download/${id}.mp3` });
@@ -498,7 +589,7 @@ app.post('/api/optimize', upload.single('audio'), async (req, res) => {
 });
 app.post('/api/remix', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
-  const remixSpeed = Number(req.body.speed);
+  const remixSpeed = Number.parseFloat(String(req.body.speed ?? '').trim());
   const format = String(req.body.format || 'mp3').toLowerCase();
   if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 4) {
     cleanup(req.file.path);
@@ -510,6 +601,7 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
   }
   const id = crypto.randomUUID();
   const output = path.join(outputDir, `${id}.${format}`);
+  const normalizedSpeed = Number(remixSpeed.toFixed(3));
   const codecArgs = format === 'wav'
     ? ['-c:a', 'pcm_s16le']
     : format === 'flac'
@@ -517,16 +609,25 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
       : format === 'ogg'
         ? ['-c:a', 'libvorbis', '-q:a', '6']
         : ['-c:a', 'libmp3lame', '-b:a', '192k'];
-  const tempoFilters = remixSpeed <= 2
-    ? [`atempo=${remixSpeed}`]
-    : ['atempo=2', `atempo=${remixSpeed / 2}`];
+  let tempoFilters;
+  if (normalizedSpeed <= 2) {
+    tempoFilters = [`atempo=${normalizedSpeed}`];
+  } else {
+    const firstPass = 2;
+    const secondPass = normalizedSpeed / firstPass;
+    tempoFilters = [
+      `atempo=${firstPass}`,
+      `atempo=${secondPass.toFixed(3)}`
+    ];
+  }
   try {
     await runFfmpeg(req.file.path, output, ['-filter:a', tempoFilters.join(','), ...codecArgs]);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
+    outputOwners.set(`${id}.${format}`, requestEmail(req));
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
-    const fileName = `${originalName}-remix-${remixSpeed.toFixed(2)}x.${format}`;
-    const metadata = { originalSpeed: 1, remixSpeed, robloxPlaybackSpeed: Number((1 / remixSpeed).toFixed(3)), format };
+    const fileName = `${originalName}-remix-${normalizedSpeed.toFixed(3)}x.${format}`;
+    const metadata = { originalSpeed: 1, remixSpeed: normalizedSpeed, robloxPlaybackSpeed: Number((1 / normalizedSpeed).toFixed(3)), format };
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
     res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${id}.${format}`, ...metadata });
   } catch (error) {
@@ -537,6 +638,10 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
 app.get('/api/download/:file', (req, res) => {
   const file = path.basename(req.params.file);
   const fullPath = path.join(outputDir, file);
+  const owner = outputOwners.get(file);
+  const email = requestEmail(req);
+  if (!email) return res.status(401).json({ error: 'Login diperlukan.' });
+  if (!owner || (owner !== email && !isPaymentAdmin(req))) return res.status(403).json({ error: 'Anda tidak memiliki akses ke hasil ini.' });
   if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'Hasil tidak ditemukan.' });
   res.download(fullPath, file);
 });
@@ -588,7 +693,7 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     if (!assetId) {
       return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
     }
-    history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', createdAt: new Date().toISOString() });
+    history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString() });
     res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId } });
   } catch (error) {
     cleanup(req.file.path);
