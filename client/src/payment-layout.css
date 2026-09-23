@@ -132,6 +132,23 @@
   margin: 0;
 }
 
+.payment-qr-frame {
+  position: relative;
+  cursor: zoom-in;
+}
+
+.qr-download-link {
+  display: inline-flex;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  border: 1px solid #617940;
+  border-radius: 7px;
+  background: #c8f76e12;
+  color: #c8f76e;
+  font: 10px 'DM Mono';
+  text-decoration: none;
+}
+
 .payment-status {
   display: grid;
   gap: 5px;

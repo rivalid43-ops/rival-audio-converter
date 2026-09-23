@@ -442,6 +442,26 @@ function PaymentQrModal({ open, close, image, paymentTarget, plan, orderStatus, 
     setStep(orderStatus ? 2 : 1);
   }, [open, orderStatus?.id]);
 
+  useEffect(() => {
+    if (!open || !image) return undefined;
+    const qrImage = document.querySelector('.payment-modal-modern .payment-qr-frame img[alt="QR pembayaran manual"]');
+    if (!qrImage) return undefined;
+    qrImage.style.cursor = 'zoom-in';
+    const openQr = () => window.open(image, '_blank', 'noopener,noreferrer');
+    qrImage.addEventListener('click', openQr);
+    const frame = qrImage.closest('.payment-qr-frame');
+    const download = document.createElement('a');
+    download.href = image;
+    download.download = 'qr-pembayaran.jpg';
+    download.className = 'qr-download-link';
+    download.textContent = 'Download QR';
+    frame?.appendChild(download);
+    return () => {
+      qrImage.removeEventListener('click', openQr);
+      download.remove();
+    };
+  }, [open, image, step]);
+
   if (!open) return null;
   const currentPlan = plan || { name: 'Pilih paket', price: 0, duration: '1 bulan' };
   const amount = Number(orderStatus?.amount || currentPlan.price || 0);
@@ -467,6 +487,12 @@ function normalizeOrderStatusForUi(status) {
   const value = String(status || 'PENDING').toUpperCase();
   if (value === 'WAITING_PAYMENT' || value === 'PAYMENT_UPLOADED') return 'PENDING';
   return ['PENDING', 'APPROVED', 'REJECTED'].includes(value) ? value : 'PENDING';
+}
+
+function QrPreview({ image, alt }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!image) return <div className="notice-bar notice-error">QR pembayaran belum diatur admin.</div>;
+  return <><button type="button" className="payment-qr-frame payment-qr-button" onClick={() => setExpanded(true)} aria-label="Perbesar QR pembayaran"><img src={image} alt={alt} /><span>Klik untuk memperbesar</span></button>{expanded && <div className="qr-lightbox" onClick={() => setExpanded(false)}><div className="qr-lightbox-card" onClick={(event) => event.stopPropagation()}><button className="icon-action qr-lightbox-close" onClick={() => setExpanded(false)} aria-label="Tutup QR"><X size={18} /></button><img src={image} alt={`${alt} ukuran besar`} /><a className="primary-button" href={image} download="qr-pembayaran.jpg"><Download size={16} /> Download QR</a></div></div>}</>;
 }
 
 function LegacyPaymentModal({ open, close, image, paymentTarget, plan, orderStatus, setPaymentOpen, createPaymentOrder, uploadProof, proofFile, setProofFile, chatRoom, chatInput, setChatInput, sendChat, loadChat }) {
@@ -513,12 +539,38 @@ function App() {
   const [robloxApi, setRobloxApi] = useState({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' });
   const visitorIdRef = useRef(crypto.randomUUID());
   const toastTimerRef = useRef(null);
+  const touchAudioRef = useRef(null);
 
   const notify = ({ type = 'info', title, message, action = null, duration = 4500 }) => {
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     setToast({ type, title, message, action });
     if (duration > 0) toastTimerRef.current = window.setTimeout(() => setToast(null), duration);
   };
+
+  useEffect(() => {
+    const playTouchSound = (event) => {
+      const target = event.target.closest('button, a, select, input[type="checkbox"], input[type="radio"]');
+      if (!target || target.disabled || target.type === 'range' || target.type === 'file') return;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const context = touchAudioRef.current || new AudioContextClass();
+      touchAudioRef.current = context;
+      if (context.state === 'suspended') context.resume();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(620, context.currentTime);
+      oscillator.frequency.exponentialRampToValueAtTime(420, context.currentTime + 0.045);
+      gain.gain.setValueAtTime(0.045, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.055);
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      oscillator.start();
+      oscillator.stop(context.currentTime + 0.06);
+    };
+    document.addEventListener('pointerdown', playTouchSound, true);
+    return () => document.removeEventListener('pointerdown', playTouchSound, true);
+  }, []);
 
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));

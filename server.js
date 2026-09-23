@@ -431,7 +431,7 @@ app.get('/api/payments/qr', async (req, res) => {
   try {
     const settings = await getPaymentSettings();
     const fileName = path.basename(String(settings.qr_image || ''));
-    const candidates = [path.join(uploadDir, fileName), path.join(root, fileName)].filter(Boolean);
+    const candidates = [path.join(uploadDir, fileName), path.join(root, fileName), path.join(root, 'client', fileName)].filter(Boolean);
     const filePath = candidates.find((candidate) => fs.existsSync(candidate));
     if (!filePath) return res.status(404).json({ error: 'QR pembayaran belum diatur admin.' });
     res.sendFile(filePath);
