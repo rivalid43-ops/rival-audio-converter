@@ -29,7 +29,7 @@ if (isProduction && !hasConfiguredSessionSecret) {
 }
 const effectiveSessionSecret = hasConfiguredSessionSecret ? configuredSessionSecret : crypto.randomBytes(32).toString('hex');
 const configuredRobloxKeySecret = String(process.env.ROBLOX_API_KEY_SECRET || '').trim();
-if (isProduction && !configuredRobloxKeySecret) throw new Error('ROBLOX_API_KEY_SECRET wajib diatur di Railway Environment Variables.');
+const robloxKeySecretReady = Boolean(configuredRobloxKeySecret);
 const effectiveRobloxKeySecret = configuredRobloxKeySecret || crypto.randomBytes(32).toString('hex');
 app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
@@ -217,6 +217,7 @@ function decryptRobloxApiKey(value) {
   }
 }
 function requireUser(req, res) { if (!req.session?.googleUser?.id) { res.status(401).json({ error: 'Login Google diperlukan sebelum menghubungkan Roblox.' }); return false; } return true; }
+function requireRobloxSecret(res) { if (!robloxKeySecretReady) { res.status(503).json({ error: 'Roblox integration belum aktif. Admin harus mengatur ROBLOX_API_KEY_SECRET sebagai Railway Environment Variable.' }); return false; } return true; }
 function getRobloxApiSession(req) {
   const connectionId = req.session?.robloxApiConnectionId;
   if (!connectionId) return null;
@@ -274,7 +275,7 @@ function runFfmpeg(input, output, args) {
 }
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: Boolean(effectiveRobloxKeySecret), ffmpeg: ffmpegCommand }));
+app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: robloxKeySecretReady, ffmpeg: ffmpegCommand }));
 app.get('/api/usage', async (req, res) => {
   try {
     await paymentDatabaseReady;
@@ -542,6 +543,7 @@ app.get('/api/download/:file', (req, res) => {
 
 app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) => {
   if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
@@ -601,6 +603,7 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
 });
 app.get('/api/roblox/assets/:id', async (req, res) => {
   if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ error: 'Connect Roblox API terlebih dahulu.' });
@@ -610,6 +613,7 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
 });
 app.post('/api/roblox-api/connect', async (req, res) => {
   if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
   const apiKey = String(req.body.apiKey || '').trim();
   const creatorType = req.body.creatorType === 'group' ? 'group' : 'user';
   const creatorId = String(req.body.creatorId || '').trim();
@@ -630,6 +634,7 @@ app.post('/api/roblox-api/connect', async (req, res) => {
   res.json({ ok: true, connected: true, creatorType, creatorId, userId: creatorType === 'user' ? creatorId : 'Unknown', creator: creatorType === 'group' ? 'Community/Group' : 'Personal User', permissions: ['Assets: Write pending Roblox preflight'], apiStatus: 'READY_FOR_UPLOAD_CHECK', message: 'API key tersimpan aman di memory server. Permission dan resource akan diverifikasi oleh endpoint upload resmi Roblox.' });
 });
 app.get('/api/roblox-api/session', (req, res) => {
+  if (!robloxKeySecretReady) return res.json({ connected: false, apiStatus: 'SERVER_SECRET_NOT_CONFIGURED' });
   const session = getRobloxApiSession(req);
   if (!session) return res.json({ connected: false, apiStatus: 'NOT CONNECTED' });
   const apiKey = decryptRobloxApiKey(session.encryptedKey);
@@ -648,6 +653,7 @@ app.get('/api/roblox-api/session', (req, res) => {
 });
 app.post('/api/roblox-api/test', async (req, res) => {
   if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ ok: false, error: 'Connect Roblox API terlebih dahulu.' });
@@ -663,6 +669,7 @@ app.post('/api/roblox-api/test', async (req, res) => {
 });
 app.delete('/api/roblox-api/remove', (req, res) => {
   if (!requireUser(req, res)) return;
+  if (!requireRobloxSecret(res)) return;
   clearRobloxApiSession(req);
   res.json({ ok: true, connected: false, apiStatus: 'NOT CONNECTED' });
 });
