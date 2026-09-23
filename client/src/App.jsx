@@ -268,6 +268,8 @@ function WorkspacePageHeader({ page }) { const titles = { dashboard: ['Dashboard
 function RemixPage() {
   const [file, setFile] = useState(null);
   const [speed, setSpeed] = useState(1);
+  const [speedMode, setSpeedMode] = useState('manual');
+  const [automaticSpeed, setAutomaticSpeed] = useState(3.63);
   const [format, setFormat] = useState('mp3');
   const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -276,7 +278,8 @@ function RemixPage() {
   const [robloxConnected, setRobloxConnected] = useState(false);
   const [result, setResult] = useState(null);
   const audioRef = useRef(null);
-  const robloxSpeed = Number((1 / speed).toFixed(3));
+  const activeSpeed = speedMode === 'automatic' ? automaticSpeed : speed;
+  const robloxSpeed = Number((1 / activeSpeed).toFixed(3));
   useEffect(() => {
     fetch('/api/roblox-api/session', { credentials: 'include' })
       .then((response) => response.ok ? response.json() : null)
@@ -305,6 +308,8 @@ function RemixPage() {
   const togglePreview = async () => {
     if (!audioRef.current || !file) return;
     audioRef.current.playbackRate = speed;
+      audioRef.current.playbackRate = activeSpeed;
+      audioRef.current.playbackRate = activeSpeed;
     if (audioRef.current.paused) {
       await audioRef.current.play();
       setPreviewing(true);
@@ -378,8 +383,10 @@ function RemixPage() {
     {file && <>
       <audio ref={audioRef} controls src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} />
       <div className="remix-controls"><label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}x</strong></label><label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
+        <div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="3.63">3.63x</option><option value="3.34">3.34x</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}x</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
       <div className="result-actions"><button className="primary-button" onClick={togglePreview}>{previewing ? <><PauseIcon /> Pause Tes</> : <><Play size={16} /> Play Tes</>}</button><button className="secondary-button" onClick={() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPreviewing(false); }}>Stop</button><button className="convert-button" disabled={busy} onClick={exportRemix}>{busy ? 'Remixing...' : 'Export Remix'} <ArrowUpRight size={16} /></button></div>
       <div className="remix-metadata"><span>Speed Remix: <strong>{speed.toFixed(2)}x</strong></span><span>Roblox PlaybackSpeed: <strong>{robloxSpeed.toFixed(3)}x</strong></span></div>
+      <div className="remix-metadata"><span>Speed Mode: <strong>{speedMode === 'automatic' ? 'Automatic' : 'Manual'}</strong></span><span>Speed Remix: <strong>{activeSpeed.toFixed(2)}x</strong></span><span>Roblox PlaybackSpeed: <strong>{robloxSpeed.toFixed(3)}x</strong></span></div>
     </>}
     {result?.error && <div className="notice-bar notice-error">{result.error}</div>}
     {result?.downloadUrl && <section className="panel result-panel remix-result"><div className="panel-heading"><div><span className="eyebrow">HASIL REMIX</span><h2>Musik siap didownload</h2></div><span className="success-label"><Check size={13} /> READY</span></div><audio controls src={result.downloadUrl} /><div className="result-actions"><button className="download-button" onClick={downloadRemix} disabled={downloadBusy}><Download size={16} /> {downloadBusy ? 'Downloading...' : `Download ${result.format.toUpperCase()}`}</button>{robloxConnected ? <button className="roblox-button" onClick={uploadRemixToRoblox} disabled={uploadBusy}><CloudUpload size={16} /> {uploadBusy ? 'Uploading...' : 'Save to Roblox'}</button> : <button className="roblox-button" onClick={() => { window.location.hash = '#/roblox-api'; }}>Connect Roblox API</button>}<span className="muted-note">Roblox PlaybackSpeed: {result.robloxPlaybackSpeed.toFixed(3)}x</span></div>{result.assetId && <div className="notice-bar notice-success"><Check size={16} /> Asset Roblox: {result.assetId}</div>}</section>}

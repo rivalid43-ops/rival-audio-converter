@@ -37,6 +37,8 @@ Database persistence schema tersedia di `database/schema.sql` untuk users, credi
 
 Isi `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, dan `GOOGLE_REDIRECT_URI` untuk login awal. Buat OAuth Client ID bertipe Web application di Google Cloud Console, lalu daftarkan redirect URI yang sama, misalnya `http://localhost:3000/auth/google/callback`.
 
+Isi `PAYMENT_ADMIN_EMAIL` dengan alamat email Google admin pembayaran. Nilainya dibandingkan dengan email hasil verifikasi Google, bukan dengan nama tampilan akun.
+
 Roblox memakai API key Open Cloud dari halaman Credentials. API key dikirim sekali ke backend melalui HTTPS, lalu disimpan terenkripsi hanya di memory server per session; session database hanya menyimpan reference acak. `ROBLOX_API_KEY_SECRET` wajib diatur di Railway Environment Variables dan tidak boleh masuk Git. Isi User ID atau Group ID yang sesuai saat menghubungkan key.
 
 ## Alur Roblox
