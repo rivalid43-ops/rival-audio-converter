@@ -87,6 +87,7 @@ const recentUploads = [
 function cn(...values) { return values.filter(Boolean).join(' '); }
 function formatBytes(bytes) { return `${(bytes / 1024 / 1024).toFixed(2)} MB`; }
 function isMediaFile(file) { return Boolean(file && (file.type.startsWith('audio/') || file.type.startsWith('video/'))); }
+function calculateNormalPlaybackSpeed(remixSpeed) { const value = Number(remixSpeed); return value > 0 ? 1 / value : 1; }
 
 function LegacyRemixPage() {
   const location = useLocation();
@@ -113,7 +114,7 @@ function LegacyRemixPage() {
   const canvasRef = useRef(null);
   const originalSpeed = 1;
   const selectedSpeed = speedMode === 'automatic' ? automaticSpeed : speed;
-  const robloxSpeed = Number((1 / selectedSpeed).toFixed(3));
+  const robloxSpeed = calculateNormalPlaybackSpeed(selectedSpeed);
 
   useEffect(() => {
     if (!file || !canvasRef.current) return;
@@ -152,14 +153,14 @@ function LegacyRemixPage() {
   const stopPreview = () => { if (!audioRef.current) return; audioRef.current.pause(); audioRef.current.currentTime = 0; setPreviewing(false); };
   const exportRemix = async () => { if (!file) return; setBusy(true); setResult(null); const form = new FormData(); form.append('audio', file); form.append('speed', String(selectedSpeed)); form.append('format', format); try { const response = await fetch('/api/remix', { method: 'POST', credentials: 'include', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setResult(data); } catch (error) { setResult({ error: error.message }); } finally { setBusy(false); } };
   const downloadRemix = async () => { if (!result?.downloadUrl) return; setDownloadBusy(true); try { const response = await fetch(result.downloadUrl, { credentials: 'include' }); if (!response.ok) throw new Error('File hasil tidak ditemukan.'); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = result.name; link.click(); URL.revokeObjectURL(url); } catch (error) { setResult((current) => ({ ...current, error: error.message })); } finally { setDownloadBusy(false); } };
-  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); try { const blob = await fetch(result.downloadUrl, { credentials: 'include' }).then((response) => response.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload ke Roblox gagal.'); setResult((current) => ({ ...current, assetId: data.assetId })); } catch (error) { setResult((current) => ({ ...current, error: error.message })); } finally { setUploadBusy(false); } };
-  const copyRobloxSpeed = () => navigator.clipboard.writeText(robloxSpeed.toFixed(3));
-  return <section className="panel standalone-panel remix-page"><div className="panel-heading"><div><span className="eyebrow">AUDIO REMIX</span><h2>Remix Musik</h2></div><span className="safe-badge"><LockKeyhole size={12} /> LOCAL PREVIEW</span></div><label className="drop-area remix-drop"><input type="file" accept="audio/*" onChange={(event) => chooseFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>{file ? file.name : 'Upload audio untuk remix'}</strong><span>MP3, WAV, OGG, M4A, FLAC hingga 100 MB</span></label>{file && <><canvas ref={canvasRef} className="remix-waveform" width="1000" height="180" /><audio ref={audioRef} src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} /><div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="3.63">3.63x</option><option value="3.34">3.34x</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}x</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
+  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); try { const blob = await fetch(result.downloadUrl, { credentials: 'include' }).then((response) => response.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('remixSpeed', String(result.remixSpeed)); form.append('robloxPlaybackSpeed', String(result.robloxPlaybackSpeed)); form.append('originalFilename', String(result.originalFilename || file?.name || '')); form.append('remixFilename', String(result.remixFilename || result.name)); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload ke Roblox gagal.'); setResult((current) => ({ ...current, assetId: data.assetId, robloxPlaybackSpeed: Number(data.remixMetadata?.robloxPlaybackSpeed || current.robloxPlaybackSpeed || robloxSpeed), audioIsOriginal: false, remixMetadata: data.remixMetadata })); } catch (error) { setResult((current) => ({ ...current, error: error.message })); } finally { setUploadBusy(false); } };
+  const copyRobloxSpeed = () => navigator.clipboard.writeText(String(robloxSpeed));
+  return <section className="panel standalone-panel remix-page"><div className="panel-heading"><div><span className="eyebrow">AUDIO REMIX</span><h2>Remix Musik</h2></div><span className="safe-badge"><LockKeyhole size={12} /> LOCAL PREVIEW</span></div><label className="drop-area remix-drop"><input type="file" accept="audio/*" onChange={(event) => chooseFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>{file ? file.name : 'Upload audio untuk remix'}</strong><span>MP3, WAV, OGG, M4A, FLAC hingga 100 MB</span></label>{file && <><canvas ref={canvasRef} className="remix-waveform" width="1000" height="180" /><audio ref={audioRef} src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} /><div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="1.00">1.00</option><option value="1.20">1.20</option><option value="1.50">1.50</option><option value="2.00">2.00</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
       <div className="result-actions"><button className="primary-button" onClick={togglePreview}>{previewing ? <><PauseIcon /> Pause Tes</> : <><Play size={16} /> Play Tes</>}</button><button className="secondary-button" onClick={() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPreviewing(false); }}>Stop</button><button className="convert-button" disabled={busy} onClick={exportRemix}>{busy ? 'Remixing...' : 'Export Remix'} <ArrowUpRight size={16} /></button></div>
-      <div className="remix-metadata"><span>Speed Mode: <strong>{speedMode === 'automatic' ? 'Automatic' : 'Manual'}</strong></span><span>Speed Remix: <strong>{selectedSpeed.toFixed(3)}x</strong></span><span>Roblox PlaybackSpeed: <strong>{robloxSpeed.toFixed(3)}x</strong></span></div>
+      <div className="remix-metadata"><span>Speed Mode: <strong>{speedMode === 'automatic' ? 'Automatic' : 'Manual'}</strong></span><span>Speed Remix: <strong>{selectedSpeed.toFixed(2)}</strong></span><span>Roblox PlaybackSpeed: <strong>{robloxSpeed.toFixed(2)}</strong></span><small>PlaybackSpeed ini digunakan untuk mengembalikan hasil remix ke kecepatan normal di Roblox.</small></div>
     </>}
     {result?.error && <div className="notice-bar notice-error">{result.error}</div>}
-    {result?.downloadUrl && <section className="panel result-panel remix-result"><div className="panel-heading"><div><span className="eyebrow">HASIL REMIX</span><h2>Musik siap didownload</h2></div><span className="success-label"><Check size={13} /> READY</span></div><audio controls src={result.downloadUrl} /><div className="result-actions"><button className="download-button" onClick={downloadRemix} disabled={downloadBusy}><Download size={16} /> {downloadBusy ? 'Downloading...' : `Download ${result.format.toUpperCase()}`}</button>{robloxConnected ? <button className="roblox-button" onClick={uploadRemixToRoblox} disabled={uploadBusy}><CloudUpload size={16} /> {uploadBusy ? 'Uploading...' : 'Save to Roblox'}</button> : <button className="roblox-button" onClick={() => { window.location.hash = '#/roblox-api'; }}>Connect Roblox API</button>}<span className="muted-note">Roblox PlaybackSpeed: {result.robloxPlaybackSpeed.toFixed(3)}x</span></div>{result.assetId && <div className="notice-bar notice-success"><Check size={16} /> Asset Roblox: {result.assetId}</div>}</section>}
+    {result?.downloadUrl && <section className="panel result-panel remix-result"><div className="panel-heading"><div><span className="eyebrow">FINAL REMIX</span><h2>Remix audio siap digunakan</h2></div><span className="success-label"><Check size={13} /> REMIXED</span></div><audio controls src={result.downloadUrl} /><div className="result-actions"><button className="download-button" onClick={downloadRemix} disabled={downloadBusy}><Download size={16} /> {downloadBusy ? 'Downloading...' : `Download ${result.format.toUpperCase()}`}</button>{robloxConnected ? <button className="roblox-button" onClick={uploadRemixToRoblox} disabled={uploadBusy}><CloudUpload size={16} /> {uploadBusy ? 'Uploading...' : 'Save to Roblox'}</button> : <button className="roblox-button" onClick={() => { window.location.hash = '#/roblox-api'; }}>Connect Roblox API</button>}<span className="muted-note">Roblox PlaybackSpeed: {Number(result.robloxPlaybackSpeed || robloxSpeed).toFixed(2)}</span></div>{result.assetId && <div className="notice-bar notice-success"><Check size={16} /> Remix asset Roblox: {result.assetId} · PlaybackSpeed {Number(result.robloxPlaybackSpeed || robloxSpeed).toFixed(2)}</div>}</section>}
   </section>;
 }
 
@@ -371,21 +372,79 @@ function ApiDocs() { const endpoints = [['POST', '/api/audio/convert', 'Convert 
 function CreditsPage({ navigate }) { const packages = [['100 Credits', '$—', 'For trying the workflow'], ['500 Credits', '$—', 'For active creators'], ['1000 Credits', '$—', 'For small teams']]; return <><section className="panel credits-hero"><div><span className="eyebrow">CURRENT CREDITS</span><h2>0 <small>CREDITS</small></h2><p>Credits will be consumed by conversion workflows once billing is connected.</p></div><Zap size={39} color="#c8f76e" /></section><section className="panel package-panel"><div className="panel-title"><div><span className="eyebrow">CREDITS TOP UP</span><h2>Choose a package</h2></div><span className="muted-note">Payment gateway placeholder</span></div><div className="package-grid">{packages.map(([name, price, description]) => <div className="package-card" key={name}><Zap size={17} color="#c8f76e" /><strong>{name}</strong><b>{price}</b><p>{description}</p><button className="secondary-button" onClick={() => navigate('billing')}>Connect payment <ArrowUpRight size={14} /></button></div>)}</div></section></>; }
 function BillingPage({ openPayment }) {
   const [plans, setPlans] = useState([]);
-  useEffect(() => { fetch('/api/payments/plans').then((response) => response.ok ? response.json() : []).then(setPlans).catch(() => setPlans([])); }, []);
-  return <section className="billing-page"><section className="panel billing-intro"><div><span className="eyebrow">RIVAL DEV PLANS</span><h2>Pilih plan kamu</h2><p>Lima pemakaian pertama gratis. Setelah itu credits dipakai otomatis setiap kali proses audio.</p></div><Zap size={32} color="#c8f76e" /></section><div className="plan-grid">{plans.map((plan) => <section className="plan-option" key={plan.id}><span className="plan-kicker">PLAN</span><h3>{plan.name}</h3><strong>{plan.price}</strong><p>{plan.detail}</p><small className="muted-note">{plan.credits} credits</small><button className="primary-button" onClick={() => openPayment(plan)}>Buy <ArrowUpRight size={16} /></button></section>)}</div></section>;
+  const [selectedPlanId, setSelectedPlanId] = useState('1-month');
+
+  useEffect(() => {
+    fetch('/api/payments/plans')
+      .then((response) => response.ok ? response.json() : [])
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setPlans(list);
+        if (list[0]) setSelectedPlanId(list[0].id);
+      })
+      .catch(() => setPlans([]));
+  }, []);
+
+  const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) || plans[0];
+
+  return <section className="billing-page"><section className="panel billing-intro"><div><span className="eyebrow">RIVAL DEV PLANS</span><h2>Choose Your Plan</h2><p>Pilih paket yang sesuai dengan kebutuhan kamu.</p></div><Zap size={32} color="#c8f76e" /></section><div className="plan-grid">{plans.map((plan) => <section className={cn('plan-option', selectedPlan?.id === plan.id && 'plan-option-selected')} key={plan.id} onClick={() => setSelectedPlanId(plan.id)}><div className="plan-top-row"><span className="plan-kicker">{plan.type === 'team' ? 'TEAM' : 'PLAN'}</span>{plan.id === '1-year' && <span className="plan-badge">Popular</span>}</div><h3>{plan.name}</h3><div className="plan-price">{`Rp${Number(plan.price || 0).toLocaleString('id-ID')}`}</div><div className="plan-duration">{plan.duration || '1 bulan'}</div><ul className="plan-benefits">{(plan.benefits || []).map((benefit) => <li key={benefit}>{benefit}</li>)}</ul><button className="primary-button plan-buy" onClick={(event) => { event.stopPropagation(); openPayment(plan); }}>Buy Now <ArrowUpRight size={16} /></button></section>)}</div>{selectedPlan && <div className="billing-selected-summary"><span>Selected plan</span><strong>{selectedPlan.name}</strong><small>{selectedPlan.duration || '1 bulan'} · {`Rp${Number(selectedPlan.price || 0).toLocaleString('id-ID')}`}</small></div>}</section>;
 }
 function PaymentHistory() {
   const [payments, setPayments] = useState([]);
+  const [selectedOrderId, setSelectedOrderId] = useState(null);
+
   useEffect(() => {
     fetch('/api/payments', { credentials: 'include' })
       .then((response) => response.ok ? response.json() : [])
-      .then((data) => setPayments(Array.isArray(data) ? data : []))
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setPayments(list);
+        if (list[0]) setSelectedOrderId(list[0].id);
+      })
       .catch(() => setPayments([]));
   }, []);
-  return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ACCOUNT</span><h2>Payment History</h2></div><button className="secondary-button"><Download size={15} /> Export</button></div><div className="table-wrap"><table><thead><tr><th>Invoice</th><th>Package</th><th>Amount</th><th>Status</th><th>Date</th><th>Action</th></tr></thead><tbody>{payments.length ? payments.map((item) => <tr key={item.id}><td>{item.orderNumber}</td><td>{item.planName}</td><td>Rp{Number(item.amount || 0).toLocaleString('id-ID')}</td><td><Status status={item.status} /></td><td>{new Date(item.createdAt).toLocaleDateString('id-ID')}</td><td><a className="icon-action" href={`/api/chats/${item.id}`} target="_blank" rel="noreferrer" aria-label="Open order chat"><MessageCircle size={16} /></a></td></tr>) : <tr><td colSpan="6">Belum ada order pembayaran.</td></tr>}</tbody></table></div></section>;
+
+  const selectedPayment = payments.find((item) => item.id === selectedOrderId) || payments[0] || null;
+
+  return <section className="panel standalone-panel billing-history-panel"><div className="panel-title"><div><span className="eyebrow">ACCOUNT</span><h2>Payment History</h2></div><button className="secondary-button"><Download size={15} /> Export</button></div><div className="payment-history-layout"><div className="table-wrap"><table><thead><tr><th>Order ID</th><th>Plan</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody>{payments.length ? payments.map((item) => <tr key={item.id} className={cn(selectedPayment?.id === item.id && 'history-row-selected')} onClick={() => setSelectedOrderId(item.id)}><td>{item.orderNumber || item.id}</td><td>{item.planName}</td><td>{`Rp${Number(item.amount || 0).toLocaleString('id-ID')}`}</td><td>{new Date(item.createdAt).toLocaleDateString('id-ID')}</td><td><Status status={String(item.status || 'PENDING').toUpperCase()} /></td></tr>) : <tr><td colSpan="5">Belum ada transaksi pembayaran.</td></tr>}</tbody></table></div>{selectedPayment && <aside className="payment-history-detail"><span className="eyebrow">DETAIL</span><h3>{selectedPayment.planName}</h3><div className="detail-row"><span>Order ID</span><strong>{selectedPayment.orderNumber || selectedPayment.id}</strong></div><div className="detail-row"><span>Amount</span><strong>{`Rp${Number(selectedPayment.amount || 0).toLocaleString('id-ID')}`}</strong></div><div className="detail-row"><span>Date</span><strong>{new Date(selectedPayment.createdAt).toLocaleDateString('id-ID')}</strong></div><div className="detail-row"><span>Status</span><strong><Status status={String(selectedPayment.status || 'PENDING').toUpperCase()} /></strong></div>{selectedPayment.adminNotes && <div className="detail-row"><span>Admin note</span><strong>{selectedPayment.adminNotes}</strong></div>}</aside>}</div></section>;
 }
 
-function PaymentQrModal({ open, close, image, paymentTarget, plan, orderStatus, setPaymentOpen, createPaymentOrder, uploadProof, proofFile, setProofFile, chatRoom, chatInput, setChatInput, sendChat, loadChat }) {
+function PaymentQrModal({ open, close, image, paymentTarget, plan, orderStatus, createPaymentOrder, uploadProof, proofFile, setProofFile }) {
+  const [step, setStep] = useState(orderStatus ? 2 : 1);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setStep(orderStatus ? 2 : 1);
+  }, [open, orderStatus?.id]);
+
+  if (!open) return null;
+  const currentPlan = plan || { name: 'Pilih paket', price: 0, duration: '1 bulan' };
+  const amount = Number(orderStatus?.amount || currentPlan.price || 0);
+  const status = normalizeOrderStatusForUi(orderStatus?.status);
+  const createOrder = async () => {
+    setSubmitting(true);
+    await createPaymentOrder();
+    setSubmitting(false);
+    setStep(2);
+  };
+  const submitProof = async () => {
+    if (!proofFile) return;
+    setSubmitting(true);
+    await uploadProof();
+    setSubmitting(false);
+    setStep(4);
+  };
+
+  return <div className="payment-modal-backdrop" onClick={close}><section className="payment-modal payment-modal-modern" onClick={(event) => event.stopPropagation()}><header className="payment-header"><div><span className="eyebrow">MANUAL PAYMENT</span><h2>{orderStatus ? orderStatus.orderNumber : `Checkout ${currentPlan.name}`}</h2><p>Transfer manual, unggah bukti pembayaran, lalu tunggu verifikasi admin.</p></div><button className="icon-action" onClick={close} aria-label="Close payment"><X size={17} /></button></header><div className="payment-steps">{['Review', 'Payment', 'Upload Proof', 'Verification'].map((label, index) => <span key={label} className={index + 1 <= step ? 'payment-step-active' : ''}><b>{index + 1}</b>{label}</span>)}</div><div className="payment-summary"><div><span>PLAN</span><strong>{currentPlan.name}</strong></div><div><span>AMOUNT</span><strong>{`Rp${amount.toLocaleString('id-ID')}`}</strong></div><div><span>DURATION</span><strong>{currentPlan.duration || '1 bulan'}</strong></div></div>{step === 1 && <div className="payment-review-card"><span className="eyebrow">REVIEW ORDER</span><h3>{currentPlan.name}</h3><div className="detail-row"><span>Harga</span><strong>{`Rp${amount.toLocaleString('id-ID')}`}</strong></div><div className="detail-row"><span>Metode</span><strong>Transfer manual</strong></div><button className="primary-button payment-main-action" disabled={!plan || submitting} onClick={createOrder}>{submitting ? 'Creating order...' : 'Continue to Payment'} <ArrowUpRight size={16} /></button></div>}{step === 2 && <div className="payment-grid"><section className="payment-method"><span className="eyebrow">PAYMENT TARGET</span><h3>Transfer manual</h3><p className="payment-instruction">{paymentTarget || 'Tujuan pembayaran belum diatur admin.'}</p>{image ? <div className="payment-qr-frame"><img src={image} alt="QR pembayaran manual" /></div> : <div className="notice-bar notice-error">QR pembayaran belum diatur admin.</div>}<small className="muted-note">Transfer tepat sebesar {`Rp${amount.toLocaleString('id-ID')}`}.</small></section><section className="payment-action"><span className="eyebrow">ORDER</span><div className="detail-row"><span>Order ID</span><strong>{orderStatus?.orderNumber || 'Membuat order...'}</strong></div><div className="detail-row"><span>Status</span><strong>{status}</strong></div><button className="primary-button payment-main-action" disabled={!orderStatus} onClick={() => setStep(3)}>Continue to Upload</button></section></div>}{step === 3 && <div className="payment-grid"><section className="payment-method"><span className="eyebrow">UPLOAD PROOF</span><h3>Upload bukti pembayaran</h3><label className="payment-upload-box"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setProofFile(event.target.files[0] || null)} />{proofFile ? <><Upload size={18} /><strong>{proofFile.name}</strong><small>File siap dikirim ke admin</small></> : <><Upload size={18} /><strong>Pilih bukti transfer</strong><small>PNG / JPG / WEBP, maksimal 5 MB</small></>}</label></section><section className="payment-action"><span className="eyebrow">VERIFICATION</span><h3>Submit payment proof</h3><p className="payment-instruction">Admin akan memeriksa bukti secara manual sebelum mengaktifkan subscription.</p><button className="primary-button payment-main-action" disabled={!proofFile || submitting} onClick={submitProof}>{submitting ? 'Uploading...' : 'Submit Payment'}</button><button className="secondary-button payment-close-action" onClick={() => setStep(2)}>Back</button></section></div>}{step === 4 && <div className="payment-review-card pending-card"><span className="eyebrow">PAYMENT STATUS</span><h3>{status === 'APPROVED' ? 'Payment approved' : 'Pending verification'}</h3><p>{status === 'APPROVED' ? 'Subscription sudah aktif.' : 'Bukti pembayaran sudah diterima dan sedang diperiksa admin.'}</p><div className="detail-row"><span>Order ID</span><strong>{orderStatus?.orderNumber || '—'}</strong></div><div className="detail-row"><span>Status</span><strong>{status}</strong></div><button className="primary-button" onClick={close}>Done</button></div>}</section></div>;
+}
+
+function normalizeOrderStatusForUi(status) {
+  const value = String(status || 'PENDING').toUpperCase();
+  if (value === 'WAITING_PAYMENT' || value === 'PAYMENT_UPLOADED') return 'PENDING';
+  return ['PENDING', 'APPROVED', 'REJECTED'].includes(value) ? value : 'PENDING';
+}
+
+function LegacyPaymentModal({ open, close, image, paymentTarget, plan, orderStatus, setPaymentOpen, createPaymentOrder, uploadProof, proofFile, setProofFile, chatRoom, chatInput, setChatInput, sendChat, loadChat }) {
   if (!open) return null;
   const currentPlan = plan || { name: 'Pilih plan', price: 'Nominal belum dipilih' };
   const statusLabel = orderStatus?.status === 'payment_uploaded' ? 'Menunggu verifikasi admin' : orderStatus?.status === 'approved' ? 'Pembayaran disetujui' : orderStatus?.status === 'rejected' ? 'Pembayaran ditolak' : 'Belum ada order';
@@ -495,7 +554,7 @@ function Sidebar({ page, navigate, open, collapsed, setCollapsed, isAdmin, langu
 function Topbar({ session, credits, setSidebarOpen, navigate, online, openPayment, language, setLanguage }) { const labels = languageLabels[language] || languageLabels.id; return <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="topbar-greeting"><span>{labels.greeting} /</span><strong>{session.name}</strong><small>{online} {labels.online}</small></div><div className="topbar-actions"><div className="credit-pill"><Zap size={14} fill="currentColor" /><span>{credits} credits</span><button onClick={openPayment}>{labels.buy}</button></div><div className="language-switch"><button className={language === 'id' ? 'active' : ''} onClick={() => setLanguage('id')}>ID</button><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><button className="avatar-button" onClick={() => navigate('profile')}><span>R</span><strong>Rivalid</strong></button></div></header>; }
 function WorkspacePageHeader({ page, language, online }) { const labels = languageLabels[language] || languageLabels.id; const title = page === 'dashboard' ? labels.dashboard : page === 'billing' ? 'Billing' : page === 'remix' ? labels.remixMusic : page === 'converter' ? labels.audioConverter : page === 'admin-payments' ? labels.adminPayments : page; return <div className="page-header"><div><div className="breadcrumb">RIVAL DEV <ChevronRight size={13} /> {String(title).toUpperCase()}</div><h1>{title}</h1><p>{language === 'id' ? 'Kelola workspace audio kamu.' : 'Manage your audio workspace.'}</p></div><div className="header-date"><Activity size={15} /> {online} {labels.online}</div></div>; }
 
-function AdminPaymentsPage() {
+function LegacyAdminPaymentsPage() {
   const [orders, setOrders] = useState([]);
   const [notice, setNotice] = useState('');
   const loadOrders = async () => {
@@ -512,6 +571,65 @@ function AdminPaymentsPage() {
     setOrders((items) => items.map((item) => item.id === order.id ? data.order : item));
   };
   return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ADMIN ONLY</span><h2>Payment Orders</h2></div><button className="secondary-button" onClick={() => loadOrders().catch((error) => setNotice(error.message))}><RefreshCw size={15} /> Refresh</button></div>{notice && <div className="notice-bar notice-error">{notice}</div>}<div className="table-wrap"><table><thead><tr><th>Order</th><th>Customer</th><th>Plan</th><th>Amount</th><th>Status</th><th>Proof</th><th>Action</th></tr></thead><tbody>{orders.length ? orders.map((order) => <tr key={order.id}><td>{order.orderNumber}</td><td>{order.customerEmail}</td><td>{order.planName}</td><td>Rp{Number(order.amount || 0).toLocaleString('id-ID')}</td><td><Status status={order.status} /></td><td>{order.proofUrl ? <a className="text-button" href={order.proofUrl} target="_blank" rel="noreferrer">View</a> : '—'}</td><td><div className="result-actions"><button className="primary-button" disabled={order.status === 'approved'} onClick={() => updateOrder(order, 'approved')}><Check size={14} /> Approve</button><button className="secondary-button" disabled={order.status === 'rejected'} onClick={() => updateOrder(order, 'rejected')}><X size={14} /> Reject</button></div></td></tr>) : <tr><td colSpan="7">Belum ada order pembayaran.</td></tr>}</tbody></table></div></section>;
+}
+
+function AdminPaymentsPage() {
+  const [orders, setOrders] = useState([]);
+  const [settings, setSettings] = useState({ paymentTarget: '', qrUrl: null });
+  const [paymentTarget, setPaymentTarget] = useState('');
+  const [qrFile, setQrFile] = useState(null);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [adminNotes, setAdminNotes] = useState('');
+  const [notice, setNotice] = useState('');
+
+  const load = async () => {
+    const [ordersResponse, settingsResponse] = await Promise.all([
+      fetch('/api/admin/payments', { credentials: 'include' }),
+      fetch('/api/admin/payment-settings', { credentials: 'include' })
+    ]);
+    const ordersData = await ordersResponse.json();
+    const settingsData = await settingsResponse.json();
+    if (!ordersResponse.ok) throw new Error(ordersData.error || 'Akses admin ditolak.');
+    if (!settingsResponse.ok) throw new Error(settingsData.error || 'Konfigurasi manual payment belum siap.');
+    setOrders(Array.isArray(ordersData) ? ordersData : []);
+    setSettings(settingsData);
+    setPaymentTarget(settingsData.paymentTarget || '');
+  };
+
+  useEffect(() => { load().catch((error) => setNotice(error.message)); }, []);
+
+  const saveTarget = async () => {
+    const response = await fetch('/api/admin/payment-settings', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paymentTarget }) });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'Tujuan pembayaran gagal disimpan.');
+    setSettings(data);
+    setNotice('Tujuan pembayaran manual tersimpan.');
+  };
+
+  const saveQr = async () => {
+    if (!qrFile) return setNotice('Pilih QR terlebih dahulu.');
+    const form = new FormData();
+    form.append('qr', qrFile);
+    const response = await fetch('/api/admin/payment-settings/qr', { method: 'POST', credentials: 'include', body: form });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'QR gagal disimpan.');
+    setSettings(data);
+    setQrFile(null);
+    setNotice('QR manual payment tersimpan.');
+  };
+
+  const review = async (status) => {
+    if (!selectedOrder) return;
+    const response = await fetch(`/api/payments/${selectedOrder.id}/status`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, adminNotes: adminNotes.trim() || (status === 'APPROVED' ? 'Pembayaran diterima admin.' : 'Pembayaran ditolak admin.') }) });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'Status order gagal diperbarui.');
+    setOrders((current) => current.map((order) => order.id === selectedOrder.id ? data.order : order));
+    setSelectedOrder(null);
+    setAdminNotes('');
+    setNotice(`Order berhasil diubah ke ${status}.`);
+  };
+
+  return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ADMIN ONLY · MANUAL PAYMENT</span><h2>Billing Review</h2></div><button className="secondary-button" onClick={() => load().catch((error) => setNotice(error.message))}><RefreshCw size={15} /> Refresh</button></div>{notice && <div className="notice-bar notice-success">{notice}</div>}<div className="admin-billing-grid"><section className="admin-billing-settings"><h3>Manual payment config</h3><label className="field-label">Payment target<textarea value={paymentTarget} onChange={(event) => setPaymentTarget(event.target.value)} placeholder="Bank / e-wallet / rekening tujuan" rows={4} /></label><div className="payment-upload-box payment-upload-box-inline"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setQrFile(event.target.files[0] || null)} />{qrFile ? <><Upload size={18} /><strong>{qrFile.name}</strong><small>QR siap disimpan</small></> : <><Upload size={18} /><strong>Upload QR manual</strong><small>PNG / JPG / WEBP</small></>}</div>{settings.qrUrl && <div className="qr-preview"><img src={settings.qrUrl} alt="Manual payment QR" /></div>}<div className="result-actions"><button className="primary-button" onClick={saveTarget}>Save Target</button><button className="secondary-button" onClick={saveQr}>Save QR</button></div></section><section className="admin-billing-list"><div className="table-wrap"><table><thead><tr><th>Order ID</th><th>User</th><th>Plan</th><th>Amount</th><th>Status</th><th>Proof</th><th>Review</th></tr></thead><tbody>{orders.length ? orders.map((order) => <tr key={order.id}><td>{order.orderNumber}</td><td>{order.customerEmail}</td><td>{order.planName}</td><td>{`Rp${Number(order.amount || 0).toLocaleString('id-ID')}`}</td><td><Status status={normalizeOrderStatusForUi(order.status)} /></td><td>{order.proofUrl ? <a className="text-button" href={order.proofUrl} target="_blank" rel="noreferrer">Open</a> : '—'}</td><td><button className="secondary-button" onClick={() => setSelectedOrder(order)}>Review</button></td></tr>) : <tr><td colSpan="7">Belum ada order pembayaran.</td></tr>}</tbody></table></div></section></div>{selectedOrder && <div className="billing-review-modal"><section className="billing-review-card"><div className="panel-title"><div><span className="eyebrow">MANUAL REVIEW</span><h3>{selectedOrder.orderNumber}</h3></div><button className="icon-action" onClick={() => setSelectedOrder(null)}><X size={16} /></button></div><div className="detail-row"><span>User</span><strong>{selectedOrder.customerEmail}</strong></div><div className="detail-row"><span>Plan</span><strong>{selectedOrder.planName}</strong></div><div className="detail-row"><span>Amount</span><strong>{`Rp${Number(selectedOrder.amount || 0).toLocaleString('id-ID')}`}</strong></div>{selectedOrder.proofUrl && <div className="payment-proof-preview"><img src={selectedOrder.proofUrl} alt="Payment proof" /><a className="text-button" href={selectedOrder.proofUrl} target="_blank" rel="noreferrer">Open full proof</a></div>}<textarea value={adminNotes} onChange={(event) => setAdminNotes(event.target.value)} placeholder="Catatan atau alasan penolakan" rows={4} /><div className="result-actions"><button className="primary-button" disabled={normalizeOrderStatusForUi(selectedOrder.status) === 'APPROVED'} onClick={() => review('APPROVED')}><Check size={14} /> Approve</button><button className="secondary-button" disabled={normalizeOrderStatusForUi(selectedOrder.status) === 'APPROVED'} onClick={() => review('REJECTED')}><X size={14} /> Reject</button></div></section></div>}</section>;
 }
 
 function PageHeader({ page, online }) { return <WorkspacePageHeader page={page} online={online} language="id" />; }

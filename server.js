@@ -66,15 +66,52 @@ function databaseRun(sql, parameters = []) {
 function databaseAll(sql, parameters = []) {
   return new Promise((resolve, reject) => paymentDatabase.all(sql, parameters, (error, rows) => error ? reject(error) : resolve(rows)));
 }
+function normalizeOrderStatus(status) {
+  const value = String(status || 'PENDING').trim().toLowerCase();
+  if (['pending', 'waiting_payment', 'payment_uploaded'].includes(value)) return 'PENDING';
+  if (['approved', 'approved_payment'].includes(value)) return 'APPROVED';
+  if (['rejected', 'rejected_payment'].includes(value)) return 'REJECTED';
+  return String(status || 'PENDING').trim().toUpperCase() || 'PENDING';
+}
+function calculateNormalPlaybackSpeed(remixSpeed) {
+  const value = Number(remixSpeed);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return 1 / value;
+}
 async function initializePaymentDatabase() {
   await databaseRun('PRAGMA journal_mode = WAL');
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_orders (
     id TEXT PRIMARY KEY, order_number TEXT NOT NULL UNIQUE, customer_name TEXT NOT NULL,
-    customer_email TEXT NOT NULL, plan_name TEXT NOT NULL, amount INTEGER NOT NULL, credits INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL, created_at TEXT NOT NULL, payment_target TEXT NOT NULL,
-    qr_image TEXT, notes TEXT NOT NULL DEFAULT '', proof_url TEXT, uploaded_at TEXT, admin_notes TEXT NOT NULL DEFAULT ''
+    customer_email TEXT NOT NULL, plan_id TEXT NOT NULL DEFAULT '1-month', plan_name TEXT NOT NULL, amount INTEGER NOT NULL, duration TEXT NOT NULL DEFAULT '1 bulan', credits INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'PENDING', created_at TEXT NOT NULL, payment_target TEXT NOT NULL,
+    qr_image TEXT, notes TEXT NOT NULL DEFAULT '', proof_url TEXT, uploaded_at TEXT, admin_notes TEXT NOT NULL DEFAULT '',
+    transaction_id TEXT, reviewed_at TEXT, reviewed_by TEXT, username TEXT, subscription_start TEXT, subscription_expiry TEXT
   )`);
-  await databaseRun('ALTER TABLE payment_orders ADD COLUMN credits INTEGER NOT NULL DEFAULT 0').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN plan_id TEXT NOT NULL DEFAULT "1-month"').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN duration TEXT NOT NULL DEFAULT "1 bulan"').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN transaction_id TEXT').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN reviewed_at TEXT').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN reviewed_by TEXT').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN username TEXT').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN subscription_start TEXT').catch(() => {});
+  await databaseRun('ALTER TABLE payment_orders ADD COLUMN subscription_expiry TEXT').catch(() => {});
+  await databaseRun(`CREATE TABLE IF NOT EXISTS user_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    email TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    plan_name TEXT NOT NULL,
+    duration TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    start_date TEXT NOT NULL,
+    expiry_date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    transaction_id TEXT,
+    UNIQUE(user_id, plan_id)
+  )`);
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, sender TEXT NOT NULL,
     text TEXT NOT NULL, sent_at TEXT NOT NULL, FOREIGN KEY(order_id) REFERENCES payment_orders(id)
@@ -94,7 +131,31 @@ async function initializePaymentDatabase() {
   await databaseRun('INSERT OR IGNORE INTO payment_settings (id, payment_target, qr_image, updated_at) VALUES (1, ?, ?, ?)', [String(process.env.PAYMENT_TARGET || 'Transfer manual - tujuan pembayaran belum diatur admin'), String(process.env.PAYMENT_QR_FILE || 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg'), new Date().toISOString()]);
   const orders = await databaseAll('SELECT * FROM payment_orders ORDER BY created_at DESC');
   const messages = await databaseAll('SELECT order_id, sender, text, sent_at FROM payment_messages ORDER BY id ASC');
-  paymentOrders.push(...orders.map((item) => ({ id: item.id, orderNumber: item.order_number, customerName: item.customer_name, customerEmail: item.customer_email, planName: item.plan_name, amount: item.amount, credits: item.credits || 0, status: item.status, createdAt: item.created_at, paymentTarget: item.payment_target, qrImage: item.qr_image, notes: item.notes, proofUrl: item.proof_url, uploadedAt: item.uploaded_at, adminNotes: item.admin_notes })));
+  paymentOrders.push(...orders.map((item) => ({
+    id: item.id,
+    orderNumber: item.order_number,
+    customerName: item.customer_name,
+    customerEmail: item.customer_email,
+    planId: item.plan_id || '1-month',
+    planName: item.plan_name,
+    amount: item.amount,
+    duration: item.duration || '1 bulan',
+    credits: item.credits || 0,
+    status: normalizeOrderStatus(item.status),
+    createdAt: item.created_at,
+    paymentTarget: item.payment_target,
+    qrImage: item.qr_image,
+    notes: item.notes,
+    proofUrl: item.proof_url,
+    uploadedAt: item.uploaded_at,
+    adminNotes: item.admin_notes,
+    transactionId: item.transaction_id,
+    reviewedAt: item.reviewed_at,
+    reviewedBy: item.reviewed_by,
+    username: item.username,
+    subscriptionStart: item.subscription_start,
+    subscriptionExpiry: item.subscription_expiry
+  })));
   messages.forEach((message) => {
     let room = chatRooms.find((item) => item.orderId === message.order_id);
     if (!room) { room = { orderId: message.order_id, participants: [], messages: [] }; chatRooms.push(room); }
@@ -136,7 +197,7 @@ async function savePaymentData() {
   try {
     await databaseRun('DELETE FROM payment_orders');
     await databaseRun('DELETE FROM payment_messages');
-    for (const order of paymentOrders) await databaseRun('INSERT INTO payment_orders (id, order_number, customer_name, customer_email, plan_name, amount, credits, status, created_at, payment_target, qr_image, notes, proof_url, uploaded_at, admin_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [order.id, order.orderNumber, order.customerName, order.customerEmail, order.planName, order.amount, order.credits || 0, order.status, order.createdAt, order.paymentTarget, order.qrImage, order.notes || '', order.proofUrl || null, order.uploadedAt || null, order.adminNotes || '']);
+    for (const order of paymentOrders) await databaseRun('INSERT INTO payment_orders (id, order_number, customer_name, customer_email, plan_id, plan_name, amount, duration, credits, status, created_at, payment_target, qr_image, notes, proof_url, uploaded_at, admin_notes, transaction_id, reviewed_at, reviewed_by, username, subscription_start, subscription_expiry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [order.id, order.orderNumber, order.customerName, order.customerEmail, order.planId || '1-month', order.planName, order.amount, order.duration || '1 bulan', order.credits || 0, normalizeOrderStatus(order.status), order.createdAt, order.paymentTarget, order.qrImage, order.notes || '', order.proofUrl || null, order.uploadedAt || null, order.adminNotes || '', order.transactionId || null, order.reviewedAt || null, order.reviewedBy || null, order.username || order.customerName, order.subscriptionStart || null, order.subscriptionExpiry || null]);
     for (const room of chatRooms) for (const message of room.messages) await databaseRun('INSERT INTO payment_messages (order_id, sender, text, sent_at) VALUES (?, ?, ?, ?)', [room.orderId, message.sender, message.text, message.sentAt]);
     await databaseRun('COMMIT');
   } catch (error) {
@@ -320,14 +381,18 @@ app.get('/api/session', (req, res) => {
   res.json({ connected: true, history: history.filter((item) => item.ownerEmail === email) });
 });
 const paymentPlans = {
-  '1-month': { id: '1-month', name: '1 Bulan', price: 'Rp100.000', detail: 'Akses 1 bulan + 100 credits', amount: 100000, credits: 100 },
-  '2-month': { id: '2-month', name: '2 Bulan', price: 'Rp180.000', detail: 'Akses 2 bulan + 200 credits', amount: 180000, credits: 200 },
-  '3-month': { id: '3-month', name: '3 Bulan', price: 'Rp380.000', detail: 'Akses 3 bulan + 400 credits', amount: 380000, credits: 400 },
-  '1-year': { id: '1-year', name: '1 Tahun', price: 'Rp800.000', detail: 'Akses 1 tahun + 1.500 credits', amount: 800000, credits: 1500 },
-  team: { id: 'team', name: 'Join Team', price: 'Rp1.800.000', detail: 'Akses team + 4.000 credits', amount: 1800000, credits: 4000 }
+  '1-month': { id: '1-month', name: '1 MONTH', price: 100000, amount: 100000, duration: '1 bulan', durationLabel: '1 month', durationMonths: 1, type: 'subscription', benefits: ['Akses premium 1 bulan', 'Semua fitur audio converter', 'Fitur lanjutan tanpa batasan dasar', 'Prioritas dukungan'], credits: 0 },
+  '2-months': { id: '2-months', name: '2 MONTHS', price: 180000, amount: 180000, duration: '2 bulan', durationLabel: '2 months', durationMonths: 2, type: 'subscription', benefits: ['Akses premium 2 bulan', 'Semua fitur audio converter', 'Prioritas pemrosesan', 'Support lebih cepat'], credits: 0 },
+  '3-months': { id: '3-months', name: '3 MONTHS', price: 280000, amount: 280000, duration: '3 bulan', durationLabel: '3 months', durationMonths: 3, type: 'subscription', benefits: ['Akses premium 3 bulan', 'Fitur lengkap tanpa batas', 'Pemrosesan cepat', 'Prioritas helpdesk'], credits: 0 },
+  '1-year': { id: '1-year', name: '1 YEAR', price: 800000, amount: 800000, duration: '1 tahun', durationLabel: '1 year', durationMonths: 12, type: 'subscription', benefits: ['Akses premium 1 tahun', 'Semua fitur tanpa batas', 'Komitmen hemat', 'Upgrade prioritas permanen'], credits: 0 },
+  'join-team': { id: 'join-team', name: 'JOIN TEAM', price: 1800000, amount: 1800000, duration: 'Team', durationLabel: 'Team', durationMonths: 12, type: 'team', benefits: ['Akses tim sampai 5 member', 'Management team', 'Prioritas review cepat', 'Fitur kolaborasi premium'], credits: 0 }
 };
 app.get('/api/payments/plans', (req, res) => {
-  res.json(Object.values(paymentPlans));
+  res.json(Object.values(paymentPlans).map((plan) => ({
+    ...plan,
+    priceDisplay: `Rp${Number(plan.price).toLocaleString('id-ID')}`,
+    priceLabel: `Rp${Number(plan.price).toLocaleString('id-ID')}`
+  })));
 });
 app.get('/api/payments/config', async (req, res) => {
   try {
@@ -392,7 +457,22 @@ app.get('/api/credits', async (req, res) => {
 app.get('/api/payments', (req, res) => {
   const email = requestEmail(req);
   if (!email) return res.status(401).json({ error: 'Login diperlukan untuk melihat pembelian.' });
-  res.json(isPaymentAdmin(req) ? paymentOrders : paymentOrders.filter((order) => String(order.customerEmail || '').toLowerCase() === email));
+  const orders = isPaymentAdmin(req) ? paymentOrders : paymentOrders.filter((order) => String(order.customerEmail || '').toLowerCase() === email);
+  res.json(orders.map((order) => ({
+    ...order,
+    status: normalizeOrderStatus(order.status),
+    orderNumber: order.orderNumber || order.id,
+    planName: order.planName || order.plan_id,
+    amount: Number(order.amount || 0),
+    createdAt: order.createdAt || new Date().toISOString()
+  })));
+});
+
+app.get('/api/payments/:id', async (req, res) => {
+  const order = paymentOrders.find((item) => item.id === req.params.id || item.orderNumber === req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order tidak ditemukan.' });
+  if (!canAccessPayment(req, order)) return res.status(403).json({ error: 'Anda tidak memiliki akses ke order ini.' });
+  res.json({ ...order, status: normalizeOrderStatus(order.status) });
 });
 app.get('/api/admin/payments', async (req, res) => {
   if (!isPaymentAdmin(req)) return res.status(403).json({ error: 'Khusus admin pembayaran.' });
@@ -412,22 +492,30 @@ app.post('/api/payments/create', async (req, res) => {
   if (!customerEmail) return res.status(401).json({ error: 'Login diperlukan untuk membuat order.' });
   if (!plan) return res.status(400).json({ error: 'Paket tidak valid.' });
   const paymentSettings = await getPaymentSettings();
-  const orderNumber = `RIVAL-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
+  const orderNumber = `BMK-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
   const order = {
     id: `${orderNumber}`,
     orderNumber,
     customerName,
     customerEmail,
+    planId: plan.id,
     planName: plan.name,
-    amount: plan.amount,
-    credits: plan.credits,
-    status: 'waiting_payment',
+    amount: Number(plan.amount),
+    duration: plan.duration,
+    credits: Number(plan.credits || 0),
+    status: 'PENDING',
     createdAt: new Date().toISOString(),
     paymentTarget: paymentSettings.payment_target,
     qrImage: paymentSettings.qr_image ? '/api/payments/qr' : null,
     notes: '',
     proofUrl: null,
-    adminNotes: ''
+    adminNotes: '',
+    transactionId: `tx-${crypto.randomUUID().slice(0, 12)}`,
+    reviewedAt: null,
+    reviewedBy: null,
+    username: req.session?.googleUser?.name || customerName,
+    subscriptionStart: null,
+    subscriptionExpiry: null
   };
   paymentOrders.unshift(order);
   await savePaymentData();
@@ -437,12 +525,14 @@ app.post('/api/payments/:id/proof', imageUpload.single('proof'), async (req, res
   const order = paymentOrders.find((item) => item.id === req.params.id || item.orderNumber === req.params.id);
   if (!order) { cleanup(req.file?.path); return res.status(404).json({ error: 'Order tidak ditemukan.' }); }
   if (!canAccessPayment(req, order)) { cleanup(req.file?.path); return res.status(403).json({ error: 'Anda tidak memiliki akses ke order ini.' }); }
-  if (order.status === 'approved') { cleanup(req.file?.path); return res.status(409).json({ error: 'Order yang sudah disetujui tidak dapat diubah.' }); }
+  if (normalizeOrderStatus(order.status) === 'APPROVED') { cleanup(req.file?.path); return res.status(409).json({ error: 'Order yang sudah disetujui tidak dapat diubah.' }); }
   if (!req.file) return res.status(400).json({ error: 'Bukti pembayaran wajib diunggah.' });
   order.proofUrl = `/api/download-proof/${encodeURIComponent(req.file.filename)}`;
   order.notes = String(req.body.notes || '').trim();
-  order.status = 'payment_uploaded';
+  order.status = 'PENDING';
   order.uploadedAt = new Date().toISOString();
+  order.reviewedAt = null;
+  order.reviewedBy = null;
   await savePaymentData();
   res.json({ ok: true, order });
 });
@@ -458,17 +548,64 @@ app.post('/api/payments/:id/status', async (req, res) => {
   const order = paymentOrders.find((item) => item.id === req.params.id || item.orderNumber === req.params.id);
   if (!order) return res.status(404).json({ error: 'Order tidak ditemukan.' });
   if (!isPaymentAdmin(req)) return res.status(403).json({ error: 'Hanya admin pembayaran yang dapat mengubah status order.' });
-  const status = String(req.body.status || '').toLowerCase();
-  if (!['waiting_payment', 'payment_uploaded', 'approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Status tidak valid.' });
+  const rawStatus = String(req.body.status || '').trim();
+  const status = normalizeOrderStatus(rawStatus);
+  if (!['PENDING', 'APPROVED', 'REJECTED'].includes(status)) return res.status(400).json({ error: 'Status tidak valid.' });
+  if (normalizeOrderStatus(order.status) === 'APPROVED' && status !== 'APPROVED') return res.status(409).json({ error: 'Order yang sudah disetujui tidak dapat dibatalkan.' });
+  if (normalizeOrderStatus(order.status) === 'APPROVED' && status === 'APPROVED') return res.status(409).json({ error: 'Order ini sudah disetujui sebelumnya.' });
   order.status = status;
   order.adminNotes = String(req.body.adminNotes || '');
-  if (status === 'approved') {
-    const grant = await databaseRun('INSERT OR IGNORE INTO credit_grants (order_id, customer_email, credits, granted_at) VALUES (?, ?, ?, ?)', [order.id, order.customerEmail, order.credits || 0, new Date().toISOString()]);
-    if (grant.changes === 1 && order.credits > 0) await databaseRun('INSERT INTO credit_balances (customer_email, credits, updated_at) VALUES (?, ?, ?) ON CONFLICT(customer_email) DO UPDATE SET credits = credits + excluded.credits, updated_at = excluded.updated_at', [order.customerEmail, order.credits, new Date().toISOString()]);
-    if (!chatRooms.some((room) => room.orderId === order.id)) {
-      chatRooms.push({ orderId: order.id, participants: [order.customerName, 'Seller'], messages: [{ sender: 'Seller', text: 'Halo! Pembayaran sudah diterima. Selamat menikmati akses.', sentAt: new Date().toISOString() }] });
+  order.reviewedAt = new Date().toISOString();
+  order.reviewedBy = paymentAdminEmail;
+  order.transactionId = order.transactionId || `tx-${crypto.randomUUID().slice(0, 12)}`;
+  if (status === 'APPROVED') {
+    const startDate = new Date();
+    const plan = paymentPlans[order.planId] || { durationMonths: 1 };
+    const expiryDate = new Date(startDate);
+    expiryDate.setMonth(expiryDate.getMonth() + Number(plan.durationMonths || 1));
+
+    const existing = (await databaseAll('SELECT * FROM user_subscriptions WHERE email = ? ORDER BY expiry_date DESC LIMIT 1', [order.customerEmail]))[0];
+    let nextStartDate = startDate.toISOString();
+    let nextExpiryDate = expiryDate.toISOString();
+    if (existing && new Date(existing.expiry_date).getTime() > Date.now()) {
+      nextStartDate = new Date(existing.expiry_date).toISOString();
+      const extended = new Date(existing.expiry_date);
+      extended.setMonth(extended.getMonth() + Number(plan.durationMonths || 1));
+      nextExpiryDate = extended.toISOString();
     }
-    order.creditsGranted = true;
+
+    const subscriptionData = {
+      userId: order.customerEmail,
+      username: order.username || order.customerName,
+      email: order.customerEmail,
+      planId: order.planId,
+      planName: order.planName,
+      duration: order.duration || plan.duration,
+      amount: Number(order.amount || plan.amount),
+      status: 'ACTIVE',
+      startDate: nextStartDate,
+      expiryDate: nextExpiryDate,
+      transactionId: order.transactionId,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const existingSubscription = await databaseAll('SELECT id FROM user_subscriptions WHERE user_id = ? AND email = ?', [subscriptionData.userId, order.customerEmail]);
+    if (existingSubscription.length) {
+      await databaseRun('UPDATE user_subscriptions SET username = ?, plan_id = ?, plan_name = ?, duration = ?, amount = ?, status = ?, start_date = ?, expiry_date = ?, updated_at = ?, transaction_id = ? WHERE user_id = ? AND email = ?', [subscriptionData.username, subscriptionData.planId, subscriptionData.planName, subscriptionData.duration, subscriptionData.amount, 'ACTIVE', subscriptionData.startDate, subscriptionData.expiryDate, subscriptionData.updatedAt, subscriptionData.transactionId, subscriptionData.userId, order.customerEmail]);
+    } else {
+      await databaseRun('INSERT INTO user_subscriptions (user_id, username, email, plan_id, plan_name, duration, amount, status, start_date, expiry_date, created_at, updated_at, transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [subscriptionData.userId, subscriptionData.username, subscriptionData.email, subscriptionData.planId, subscriptionData.planName, subscriptionData.duration, subscriptionData.amount, 'ACTIVE', subscriptionData.startDate, subscriptionData.expiryDate, subscriptionData.createdAt, subscriptionData.updatedAt, subscriptionData.transactionId]);
+    }
+    order.subscriptionStart = subscriptionData.startDate;
+    order.subscriptionExpiry = subscriptionData.expiryDate;
+    await databaseRun('INSERT OR IGNORE INTO credit_grants (order_id, customer_email, credits, granted_at) VALUES (?, ?, ?, ?)', [order.id, order.customerEmail, order.credits || 0, new Date().toISOString()]);
+    if (order.credits > 0) await databaseRun('INSERT INTO credit_balances (customer_email, credits, updated_at) VALUES (?, ?, ?) ON CONFLICT(customer_email) DO UPDATE SET credits = credits + excluded.credits, updated_at = excluded.updated_at', [order.customerEmail, order.credits, new Date().toISOString()]);
+    if (!chatRooms.some((room) => room.orderId === order.id)) {
+      chatRooms.push({ orderId: order.id, participants: [order.customerName, 'Seller'], messages: [{ sender: 'Seller', text: 'Halo! Pembayaran sudah diterima. Selamat menikmati akses premium.', sentAt: new Date().toISOString() }] });
+    }
+  }
+  if (status === 'REJECTED') {
+    order.subscriptionStart = null;
+    order.subscriptionExpiry = null;
   }
   await savePaymentData();
   res.json({ ok: true, order });
@@ -593,15 +730,21 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
   const format = String(req.body.format || 'mp3').toLowerCase();
   if (!Number.isFinite(remixSpeed) || remixSpeed < 0.5 || remixSpeed > 4) {
     cleanup(req.file.path);
-    return res.status(400).json({ error: 'Speed remix harus antara 0.50x dan 4.00x.' });
+    return res.status(400).json({ error: 'Speed remix harus antara 0.50 dan 4.00.' });
   }
   if (!['mp3', 'ogg', 'flac', 'wav'].includes(format)) {
     cleanup(req.file.path);
     return res.status(400).json({ error: 'Format remix harus MP3, OGG, FLAC, atau WAV.' });
   }
   const id = crypto.randomUUID();
-  const output = path.join(outputDir, `${id}.${format}`);
-  const normalizedSpeed = Number(remixSpeed.toFixed(3));
+  const normalizedSpeed = Number(remixSpeed.toFixed(2));
+  const normalPlaybackSpeed = calculateNormalPlaybackSpeed(normalizedSpeed);
+  if (normalPlaybackSpeed === null || Math.abs((normalizedSpeed * normalPlaybackSpeed) - 1) > 0.001) {
+    cleanup(req.file.path);
+    return res.status(400).json({ error: 'Speed remix menghasilkan PlaybackSpeed Roblox yang tidak valid.' });
+  }
+  const outputName = `${id}.${format}`;
+  const output = path.join(outputDir, outputName);
   const codecArgs = format === 'wav'
     ? ['-c:a', 'pcm_s16le']
     : format === 'flac'
@@ -609,27 +752,19 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
       : format === 'ogg'
         ? ['-c:a', 'libvorbis', '-q:a', '6']
         : ['-c:a', 'libmp3lame', '-b:a', '192k'];
-  let tempoFilters;
-  if (normalizedSpeed <= 2) {
-    tempoFilters = [`atempo=${normalizedSpeed}`];
-  } else {
-    const firstPass = 2;
-    const secondPass = normalizedSpeed / firstPass;
-    tempoFilters = [
-      `atempo=${firstPass}`,
-      `atempo=${secondPass.toFixed(3)}`
-    ];
-  }
+  const tempoFilters = normalizedSpeed <= 2
+    ? [`atempo=${normalizedSpeed}`]
+    : ['atempo=2', `atempo=${(normalizedSpeed / 2).toFixed(3)}`];
   try {
     await runFfmpeg(req.file.path, output, ['-filter:a', tempoFilters.join(','), ...codecArgs]);
     cleanup(req.file.path);
     const stat = fs.statSync(output);
-    outputOwners.set(`${id}.${format}`, requestEmail(req));
+    outputOwners.set(outputName, requestEmail(req));
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
-    const fileName = `${originalName}-remix-${normalizedSpeed.toFixed(3)}x.${format}`;
-    const metadata = { originalSpeed: 1, remixSpeed: normalizedSpeed, robloxPlaybackSpeed: Number((1 / normalizedSpeed).toFixed(3)), format };
+    const fileName = `${originalName}-remix-${normalizedSpeed.toFixed(2)}.${format}`;
+    const metadata = { originalSpeed: 1, remixSpeed: normalizedSpeed, robloxPlaybackSpeed: normalPlaybackSpeed, originalFilename: req.file.originalname, remixFilename: fileName, format, audioIsOriginal: false, playbackValidation: normalizedSpeed * normalPlaybackSpeed };
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
-    res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${id}.${format}`, ...metadata });
+    res.json({ id, name: fileName, size: stat.size, downloadUrl: `/api/download/${outputName}`, ...metadata });
   } catch (error) {
     cleanup(req.file.path, output);
     res.status(500).json({ error: error.message });
@@ -660,6 +795,19 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
   const creatorType = session?.creatorType === 'group' ? 'group' : 'user';
   const creatorId = String(session?.creatorId || session?.userId || 'Unknown').trim();
   if (!creatorId || creatorId === 'Unknown') return res.status(403).json({ success: false, error: `${creatorType === 'group' ? 'Community/Group' : 'User'} ID belum diatur.` });
+  const remixSpeed = Number.parseFloat(String(req.body.remixSpeed || '').trim());
+  const robloxPlaybackSpeed = Number.parseFloat(String(req.body.robloxPlaybackSpeed || '').trim());
+  const hasRemixMetadata = Number.isFinite(remixSpeed) && Number.isFinite(robloxPlaybackSpeed) && remixSpeed > 0 && robloxPlaybackSpeed > 0;
+  if (hasRemixMetadata && Math.abs((remixSpeed * robloxPlaybackSpeed) - 1) > 0.001) {
+    cleanup(req.file.path);
+    return res.status(400).json({ success: false, error: 'Metadata PlaybackSpeed tidak mengembalikan audio ke kecepatan normal.' });
+  }
+  const remixMetadata = hasRemixMetadata ? {
+    remixSpeed,
+    robloxPlaybackSpeed,
+    originalFilename: String(req.body.originalFilename || '').trim() || null,
+    remixFilename: String(req.body.remixFilename || req.file.originalname).trim()
+  } : null;
   const safeDisplayName = safeName(req.body.displayName || req.body.name || req.file.originalname).replace(/\.[^.]+$/, '').slice(0, 50) || 'Audio';
   try {
     const form = new FormData();
@@ -693,8 +841,8 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     if (!assetId) {
       return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
     }
-    history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString() });
-    res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId } });
+    history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
+    res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
   } catch (error) {
     cleanup(req.file.path);
     const message = error.message || 'Roblox API unavailable.';
