@@ -353,6 +353,9 @@ function extractRobloxAssetId(data) {
   const value = candidates.find((candidate) => /^\d+$/.test(String(candidate || '')));
   return value ? Number(value) : 0;
 }
+function robloxOperationError(data, fallback = 'Roblox moderation failed.') {
+  return data?.error?.message || data?.error?.details || data?.message || data?.detail || data?.result?.error?.message || data?.response?.error?.message || fallback;
+}
 async function pollRobloxOperation(apiKey, operationId) {
   const maxAttempts = 20;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -362,10 +365,10 @@ async function pollRobloxOperation(apiKey, operationId) {
     if (response.status === 403) throw new Error('PERMISSION_OR_RESOURCE_DENIED');
     if (response.status === 429) throw new Error('Upload limit reached.');
     if (response.status >= 500) throw new Error('Roblox API unavailable.');
-    if (!response.ok) throw new Error(data?.message || data?.error || 'Roblox moderation failed.');
+    if (!response.ok) throw new Error(robloxOperationError(data));
     const state = String(data.status || data.state || '').toLowerCase();
     if (data.done === true || ['completed', 'complete', 'succeeded', 'success'].includes(state)) return data;
-    if (['failed', 'cancelled', 'canceled'].includes(state)) throw new Error(data?.message || 'Roblox moderation failed.');
+    if (['failed', 'cancelled', 'canceled'].includes(state)) throw new Error(robloxOperationError(data));
     await sleep(1500);
   }
   throw new Error('Roblox is still processing this upload. Please try again in a moment.');
@@ -880,9 +883,7 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     robloxOperations.set(operationId, { ownerEmail: requestEmail(req), originalName: req.file.originalname, remixMetadata });
     const operationResult = await pollRobloxOperation(apiKey, operationId);
     const assetId = extractRobloxAssetId(operationResult);
-    if (!assetId) {
-      return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
-    }
+    if (!assetId) return res.status(400).json({ success: false, error: 'Roblox selesai memproses tetapi Asset ID tidak ditemukan.', operationId });
     history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
     robloxOperations.delete(operationId);
     res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
@@ -913,7 +914,7 @@ app.get('/api/roblox/operations/:id', async (req, res) => {
     const state = String(data.status || data.state || '').toLowerCase();
     if (['failed', 'cancelled', 'canceled'].includes(state)) {
       robloxOperations.delete(operationId);
-      return res.status(400).json({ success: false, error: data?.message || 'Roblox moderation failed.' });
+      return res.status(400).json({ success: false, error: robloxOperationError(data), operationId });
     }
     if (data.done !== true && !['completed', 'complete', 'succeeded', 'success'].includes(state)) return res.status(202).json({ success: false, pending: true, operationId });
     const assetId = extractRobloxAssetId(data);
