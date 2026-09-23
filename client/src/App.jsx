@@ -101,12 +101,19 @@ function LegacyRemixPage() {
   const [file, setFile] = useState(null);
   const [result, setResult] = useState(null);
   const [speed, setSpeed] = useState(1);
+  const [speedMode, setSpeedMode] = useState('manual');
+  const [automaticSpeed, setAutomaticSpeed] = useState(3.63);
+  const [format, setFormat] = useState('mp3');
   const [previewing, setPreviewing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [robloxConnected, setRobloxConnected] = useState(false);
   const audioRef = useRef(null);
   const canvasRef = useRef(null);
   const originalSpeed = 1;
-  const robloxSpeed = Number((1 / speed).toFixed(3));
+  const selectedSpeed = speedMode === 'automatic' ? automaticSpeed : speed;
+  const robloxSpeed = Number((1 / selectedSpeed).toFixed(3));
 
   useEffect(() => {
     if (!file || !canvasRef.current) return;
@@ -137,12 +144,15 @@ function LegacyRemixPage() {
     return () => reader.abort();
   }, [file]);
 
-  useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = speed; }, [speed]);
-  useEffect(() => { setResult(null); }, [speed]);
+  useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = selectedSpeed; }, [selectedSpeed]);
+  useEffect(() => { setResult(null); }, [selectedSpeed, format]);
+  useEffect(() => { fetch('/api/roblox-api/session', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => setRobloxConnected(Boolean(data?.connected))).catch(() => setRobloxConnected(false)); }, []);
   const chooseFile = (next) => { if (next?.type.startsWith('audio/')) { setFile(next); setResult(null); setPreviewing(false); } };
-  const togglePreview = async () => { if (!audioRef.current || !file) return; audioRef.current.playbackRate = speed; if (audioRef.current.paused) { await audioRef.current.play(); setPreviewing(true); } else { audioRef.current.pause(); setPreviewing(false); } };
+  const togglePreview = async () => { if (!audioRef.current || !file) return; audioRef.current.playbackRate = selectedSpeed; if (audioRef.current.paused) { await audioRef.current.play(); setPreviewing(true); } else { audioRef.current.pause(); setPreviewing(false); } };
   const stopPreview = () => { if (!audioRef.current) return; audioRef.current.pause(); audioRef.current.currentTime = 0; setPreviewing(false); };
-  const exportRemix = async () => { if (!file) return; setBusy(true); setResult(null); const form = new FormData(); form.append('audio', file); form.append('speed', String(speed)); try { const response = await fetch('/api/remix', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setResult(data); } catch (error) { setResult({ error: error.message }); } finally { setBusy(false); } };
+  const exportRemix = async () => { if (!file) return; setBusy(true); setResult(null); const form = new FormData(); form.append('audio', file); form.append('speed', String(selectedSpeed)); form.append('format', format); try { const response = await fetch('/api/remix', { method: 'POST', credentials: 'include', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setResult(data); } catch (error) { setResult({ error: error.message }); } finally { setBusy(false); } };
+  const downloadRemix = async () => { if (!result?.downloadUrl) return; setDownloadBusy(true); try { const response = await fetch(result.downloadUrl, { credentials: 'include' }); if (!response.ok) throw new Error('File hasil tidak ditemukan.'); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = result.name; link.click(); URL.revokeObjectURL(url); } catch (error) { setResult((current) => ({ ...current, error: error.message })); } finally { setDownloadBusy(false); } };
+  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); try { const blob = await fetch(result.downloadUrl, { credentials: 'include' }).then((response) => response.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Upload ke Roblox gagal.'); setResult((current) => ({ ...current, assetId: data.assetId })); } catch (error) { setResult((current) => ({ ...current, error: error.message })); } finally { setUploadBusy(false); } };
   const copyRobloxSpeed = () => navigator.clipboard.writeText(robloxSpeed.toFixed(3));
   return <section className="panel standalone-panel remix-page"><div className="panel-heading"><div><span className="eyebrow">AUDIO REMIX</span><h2>Remix Musik</h2></div><span className="safe-badge"><LockKeyhole size={12} /> LOCAL PREVIEW</span></div><label className="drop-area remix-drop"><input type="file" accept="audio/*" onChange={(event) => chooseFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>{file ? file.name : 'Upload audio untuk remix'}</strong><span>MP3, WAV, OGG, M4A, FLAC hingga 100 MB</span></label>{file && <><canvas ref={canvasRef} className="remix-waveform" width="1000" height="180" /><audio ref={audioRef} src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} /><div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="3.63">3.63x</option><option value="3.34">3.34x</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}x</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
       <div className="result-actions"><button className="primary-button" onClick={togglePreview}>{previewing ? <><PauseIcon /> Pause Tes</> : <><Play size={16} /> Play Tes</>}</button><button className="secondary-button" onClick={() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPreviewing(false); }}>Stop</button><button className="convert-button" disabled={busy} onClick={exportRemix}>{busy ? 'Remixing...' : 'Export Remix'} <ArrowUpRight size={16} /></button></div>
@@ -152,6 +162,8 @@ function LegacyRemixPage() {
     {result?.downloadUrl && <section className="panel result-panel remix-result"><div className="panel-heading"><div><span className="eyebrow">HASIL REMIX</span><h2>Musik siap didownload</h2></div><span className="success-label"><Check size={13} /> READY</span></div><audio controls src={result.downloadUrl} /><div className="result-actions"><button className="download-button" onClick={downloadRemix} disabled={downloadBusy}><Download size={16} /> {downloadBusy ? 'Downloading...' : `Download ${result.format.toUpperCase()}`}</button>{robloxConnected ? <button className="roblox-button" onClick={uploadRemixToRoblox} disabled={uploadBusy}><CloudUpload size={16} /> {uploadBusy ? 'Uploading...' : 'Save to Roblox'}</button> : <button className="roblox-button" onClick={() => { window.location.hash = '#/roblox-api'; }}>Connect Roblox API</button>}<span className="muted-note">Roblox PlaybackSpeed: {result.robloxPlaybackSpeed.toFixed(3)}x</span></div>{result.assetId && <div className="notice-bar notice-success"><Check size={16} /> Asset Roblox: {result.assetId}</div>}</section>}
   </section>;
 }
+
+function RemixPage() { return <LegacyRemixPage />; }
 
 function PageView(props) {
   const { page, adminAccess } = props;
@@ -387,6 +399,121 @@ function PaymentQrModal({ open, close, image, paymentTarget, plan, orderStatus, 
   */
 }
 
-function PageHeader({ page, online }) { if (page === 'remix') return <div className="page-header"><div><div className="breadcrumb">RIVAL DEV <ChevronRight size={13} /> REMIX MUSIK</div><h1>Remix Musik</h1><p>Change playback speed and export a Roblox-ready remix.</p></div><div className="header-date"><Activity size={15} /> {online} online</div></div>; return <WorkspacePageHeader page={page} online={online} />; }
+function App() {
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const page = location.pathname.slice(1) || 'dashboard';
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [language, setLanguage] = useState('id');
+  const [session] = useState({ connected: false, name: 'Rivalid', userId: '—' });
+  const [credits, setCredits] = useState(0);
+  const [history, setHistory] = useState(recentUploads);
+  const [file, setFile] = useState(null);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [adminAccess, setAdminAccess] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentConfig, setPaymentConfig] = useState({ paymentTarget: '', qrUrl: null });
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [orderStatus, setOrderStatus] = useState(null);
+  const [chatRoom, setChatRoom] = useState({ orderId: '', messages: [] });
+  const [chatInput, setChatInput] = useState('');
+  const [proofFile, setProofFile] = useState(null);
+  const [online, setOnline] = useState(0);
+  const [robloxApi, setRobloxApi] = useState({ connected: false, userId: '—', creator: 'Creator', permissions: ['Not connected'], apiStatus: 'NOT CONNECTED' });
+  const visitorIdRef = useRef(crypto.randomUUID());
+
+  useEffect(() => {
+    fetch('/api/auth/me', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => setAuthUser(data?.user || null)).catch(() => setAuthUser(null)).finally(() => setAuthLoading(false));
+    fetch('/api/admin/status', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => setAdminAccess(Boolean(data?.isAdmin))).catch(() => setAdminAccess(false));
+    fetch('/api/payments/config').then((response) => response.ok ? response.json() : null).then((data) => data && setPaymentConfig(data)).catch(() => {});
+    fetch('/api/credits', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => data && !data.unlimited && setCredits(Number(data.credits || 0))).catch(() => {});
+    fetch('/api/session', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => data?.history && setHistory(data.history.map((item) => ({ name: item.name, format: 'Audio', duration: '—', status: item.status === 'Uploaded' ? 'SUCCESS' : 'PROCESSING', id: item.id || '—', date: new Date(item.createdAt).toLocaleDateString() })))).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const sendPresence = () => fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorIdRef.current }) }).then((response) => response.ok ? response.json() : null).then((data) => data?.online !== undefined && setOnline(data.online)).catch(() => {});
+    sendPresence();
+    const timer = window.setInterval(sendPresence, 20000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const navigate = (next) => { routerNavigate(`/${next}`); setSidebarOpen(false); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const openPayment = (plan = null) => { setSelectedPlan(plan); setPaymentOpen(true); };
+  const createPaymentOrder = async () => {
+    if (!selectedPlan) return;
+    const response = await fetch('/api/payments/create', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planId: selectedPlan.id }) });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'Gagal membuat order pembayaran.');
+    setOrderStatus(data);
+  };
+  const convert = async (format, quality) => {
+    if (!file) return setNotice('Pilih file musik atau video terlebih dahulu.');
+    setBusy(true); setNotice('Converting audio...');
+    const form = new FormData(); form.append('audio', file); form.append('format', format); form.append('quality', quality);
+    try {
+      const response = await fetch('/api/convert', { method: 'POST', credentials: 'include', body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Conversion failed.');
+      setResult(data); setNotice('Conversion Complete');
+    } catch (error) { setNotice(error.message || 'Conversion failed.'); } finally { setBusy(false); }
+  };
+  const upload = async () => {
+    if (!result?.downloadUrl) return setNotice('Convert audio dahulu.');
+    if (!robloxApi.connected) return setNotice('Connect Roblox API terlebih dahulu.');
+    setBusy(true); setNotice('Uploading to Roblox...');
+    try {
+      const blob = await fetch(result.downloadUrl, { credentials: 'include' }).then((response) => response.blob());
+      const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
+      const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', body: form });
+      const data = await response.json();
+      if (!response.ok || data.success !== true) throw new Error(data.error || 'Upload ke Roblox gagal.');
+      setResult((current) => ({ ...current, assetId: data.assetId }));
+      setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'PROCESSING', id: data.assetId, date: 'Just now' }, ...items]);
+      setNotice(`Upload Successful · Asset ID ${data.assetId}`);
+    } catch (error) { setNotice(error.message || 'Upload failed.'); } finally { setBusy(false); }
+  };
+  const uploadProof = async () => {
+    if (!orderStatus || !proofFile) return setNotice('Upload bukti transfer terlebih dahulu.');
+    const form = new FormData(); form.append('proof', proofFile);
+    const response = await fetch(`/api/payments/${orderStatus.id}/proof`, { method: 'POST', credentials: 'include', body: form });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'Gagal upload bukti.');
+    setOrderStatus(data.order); setProofFile(null); setNotice('Bukti pembayaran berhasil dikirim.');
+  };
+  if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
+  if (!authUser) return <LoginScreen />;
+  return <div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} isAdmin={adminAccess} language={language} setLanguage={setLanguage} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} language={language} setLanguage={setLanguage} /><main className="page-content"><WorkspacePageHeader page={page} online={online} language={language} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} setResult={setResult} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} history={history} setHistory={setHistory} convert={convert} upload={upload} session={session} credits={credits} setCredits={setCredits} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} adminAccess={adminAccess} /></main></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentConfig.qrUrl} paymentTarget={paymentConfig.paymentTarget} plan={selectedPlan} orderStatus={orderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={() => {}} loadChat={() => {}} /></div>;
+}
+
+function LoginScreen() { const [configured, setConfigured] = useState(null); useEffect(() => { fetch('/api/auth/config').then((response) => response.json()).then((data) => setConfigured(data.googleConfigured)).catch(() => setConfigured(false)); }, []); return <main className="login-screen"><div className="login-grid"></div><section className="login-card"><div className="login-brand"><span className="brand-icon"><Zap size={18} fill="currentColor" /></span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></div><div className="login-icon"><Music2 size={23} /></div><span className="eyebrow">AUDIO WORKSPACE</span><h1>Make your sound<br /><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button className="google-button" onClick={() => { window.location.href = '/auth/google'; }}><span>G</span>{configured === false ? 'Configure Google OAuth' : 'Continue with Google'}<ArrowUpRight size={16} /></button></section></main>; }
+function Sidebar({ page, navigate, open, collapsed, setCollapsed, isAdmin, language, setLanguage }) { const labels = languageLabels[language] || languageLabels.id; return <aside className={cn('sidebar-shell', open && 'sidebar-open', collapsed && 'sidebar-collapsed')}><div className="sidebar-brand"><span className="brand-icon"><Zap size={17} fill="currentColor" /></span><div><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></div></div><div className="sidebar-scroll">{getNavGroups(language).map((group) => <div className="nav-group" key={group.label}><span className="nav-group-label">{group.label}</span>{group.items.filter(([, id]) => id !== 'admin-payments' || isAdmin).map(([label, id, Icon]) => <button title={collapsed ? label : undefined} key={id} className={cn('nav-item', page === id && 'nav-item-active')} onClick={() => navigate(id)}><Icon size={16} /><span>{label}</span></button>)}</div>)}</div><div className="sidebar-language-switch"><button className={language === 'id' ? 'active' : ''} onClick={() => setLanguage('id')}>ID</button><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><div className="sidebar-footer"><span><CircleHelp size={14} /> {labels.helpCenter}</span><span>v1.0.0</span></div><button className="collapse-button" onClick={() => setCollapsed(!collapsed)}><ChevronRight size={15} /><span>{collapsed ? labels.expandSidebar : labels.collapseSidebar}</span></button></aside>; }
+function Topbar({ session, credits, setSidebarOpen, navigate, online, openPayment, language, setLanguage }) { const labels = languageLabels[language] || languageLabels.id; return <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="topbar-greeting"><span>{labels.greeting} /</span><strong>{session.name}</strong><small>{online} {labels.online}</small></div><div className="topbar-actions"><div className="credit-pill"><Zap size={14} fill="currentColor" /><span>{credits} credits</span><button onClick={openPayment}>{labels.buy}</button></div><div className="language-switch"><button className={language === 'id' ? 'active' : ''} onClick={() => setLanguage('id')}>ID</button><button className={language === 'en' ? 'active' : ''} onClick={() => setLanguage('en')}>EN</button></div><button className="avatar-button" onClick={() => navigate('profile')}><span>R</span><strong>Rivalid</strong></button></div></header>; }
+function WorkspacePageHeader({ page, language }) { const labels = languageLabels[language] || languageLabels.id; const title = page === 'dashboard' ? labels.dashboard : page === 'billing' ? 'Billing' : page === 'remix' ? labels.remixMusic : page === 'converter' ? labels.audioConverter : page === 'admin-payments' ? labels.adminPayments : page; return <div className="page-header"><div><div className="breadcrumb">RIVAL DEV <ChevronRight size={13} /> {String(title).toUpperCase()}</div><h1>{title}</h1><p>{language === 'id' ? 'Kelola workspace audio kamu.' : 'Manage your audio workspace.'}</p></div><div className="header-date"><Activity size={15} /> {online} {labels.online}</div></div>; }
+
+function AdminPaymentsPage() {
+  const [orders, setOrders] = useState([]);
+  const [notice, setNotice] = useState('');
+  const loadOrders = async () => {
+    const response = await fetch('/api/admin/payments', { credentials: 'include' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Akses admin ditolak.');
+    setOrders(data);
+  };
+  useEffect(() => { loadOrders().catch((error) => setNotice(error.message)); }, []);
+  const updateOrder = async (order, status) => {
+    const response = await fetch(`/api/payments/${order.id}/status`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, adminNotes: status === 'approved' ? 'Pembayaran diterima admin.' : 'Pembayaran ditolak admin.' }) });
+    const data = await response.json();
+    if (!response.ok) return setNotice(data.error || 'Status gagal diubah.');
+    setOrders((items) => items.map((item) => item.id === order.id ? data.order : item));
+  };
+  return <section className="panel standalone-panel"><div className="panel-title"><div><span className="eyebrow">ADMIN ONLY</span><h2>Payment Orders</h2></div><button className="secondary-button" onClick={() => loadOrders().catch((error) => setNotice(error.message))}><RefreshCw size={15} /> Refresh</button></div>{notice && <div className="notice-bar notice-error">{notice}</div>}<div className="table-wrap"><table><thead><tr><th>Order</th><th>Customer</th><th>Plan</th><th>Amount</th><th>Status</th><th>Proof</th><th>Action</th></tr></thead><tbody>{orders.length ? orders.map((order) => <tr key={order.id}><td>{order.orderNumber}</td><td>{order.customerEmail}</td><td>{order.planName}</td><td>Rp{Number(order.amount || 0).toLocaleString('id-ID')}</td><td><Status status={order.status} /></td><td>{order.proofUrl ? <a className="text-button" href={order.proofUrl} target="_blank" rel="noreferrer">View</a> : '—'}</td><td><div className="result-actions"><button className="primary-button" disabled={order.status === 'approved'} onClick={() => updateOrder(order, 'approved')}><Check size={14} /> Approve</button><button className="secondary-button" disabled={order.status === 'rejected'} onClick={() => updateOrder(order, 'rejected')}><X size={14} /> Reject</button></div></td></tr>) : <tr><td colSpan="7">Belum ada order pembayaran.</td></tr>}</tbody></table></div></section>;
+}
+
+function PageHeader({ page, online }) { return <WorkspacePageHeader page={page} online={online} language="id" />; }
 
 export default App;
