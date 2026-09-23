@@ -21,6 +21,7 @@ const languageLabels = {
     buy: 'Beli',
     dashboard: 'Dasbor',
     paymentHistory: 'Riwayat Pembayaran',
+    billing: 'Billing',
     robloxAudio: 'Audio Roblox',
     audioLibrary: 'Perpustakaan Audio',
     uploadHistory: 'Riwayat Unggah',
@@ -49,6 +50,7 @@ const languageLabels = {
     buy: 'Buy',
     dashboard: 'Dashboard',
     paymentHistory: 'Payment History',
+    billing: 'Billing',
     robloxAudio: 'Roblox Audio',
     audioLibrary: 'Audio Library',
     uploadHistory: 'Upload History',
@@ -72,7 +74,7 @@ function getNavGroups(language) {
   const labels = languageLabels[language] || languageLabels.id;
   return [
     { label: labels.main, items: [[labels.dashboard, 'dashboard', LayoutDashboard]] },
-    { label: labels.roblox, items: [[labels.paymentHistory, 'payments', CreditCard], [labels.robloxAudio, 'roblox-audio', Music2], [labels.audioLibrary, 'library', Library], [labels.uploadHistory, 'history', History]] },
+    { label: labels.roblox, items: [[labels.paymentHistory, 'payments', CreditCard], [labels.billing, 'billing', CreditCard], [labels.robloxAudio, 'roblox-audio', Music2], [labels.audioLibrary, 'library', Library], [labels.uploadHistory, 'history', History]] },
     { label: labels.tools, items: [[labels.audioConverter, 'converter', WandSparkles], [labels.bmkUploader, 'uploader', CloudUpload], [labels.remixMusic, 'remix', Music2], [labels.youtubeAudio, 'youtube', Youtube], [labels.audioOptimizer, 'optimizer', Gauge]] },
     { label: labels.api, items: [['Roblox API', 'roblox-api', KeyRound], ['Developer API', 'developer-api', Code2], ['B2B API', 'b2b-api', BookOpen]] },
     { label: labels.account, items: [[labels.profile, 'profile', UserRound], [labels.settings, 'settings', Settings], [labels.adminPayments, 'admin-payments', ShieldCheck]] }
@@ -584,7 +586,7 @@ function App() {
   };
   if (authLoading) return <div className="auth-loading"><div className="auth-spinner"></div><span>Preparing your workspace...</span></div>;
   if (!authUser) return <LoginScreen />;
-  return <div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} isAdmin={adminAccess} language={language} setLanguage={setLanguage} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => openPayment()} language={language} setLanguage={setLanguage} /><main className="page-content"><WorkspacePageHeader page={page} online={online} language={language} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} setResult={setResult} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} history={history} setHistory={setHistory} convert={convert} upload={upload} session={session} credits={credits} setCredits={setCredits} usageStatus={usageStatus} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} adminAccess={adminAccess} notify={notify} /></main></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentConfig.qrUrl} paymentTarget={paymentConfig.paymentTarget} plan={selectedPlan} orderStatus={orderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={() => {}} loadChat={() => {}} /><ToastNotification toast={toast} dismiss={() => setToast(null)} /></div>;
+  return <div className="app-frame"><Sidebar page={page} navigate={navigate} open={sidebarOpen} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} isAdmin={adminAccess} language={language} setLanguage={setLanguage} /><div className={cn('main-column', sidebarCollapsed && 'main-expanded')}><Topbar session={{ ...session, name: authUser.name }} credits={credits} setSidebarOpen={setSidebarOpen} navigate={navigate} online={online} openPayment={() => navigate('billing')} language={language} setLanguage={setLanguage} /><main className="page-content"><WorkspacePageHeader page={page} online={online} language={language} /><PageView page={page} navigate={navigate} file={file} setFile={setFile} result={result} setResult={setResult} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} history={history} setHistory={setHistory} convert={convert} upload={upload} session={session} credits={credits} setCredits={setCredits} usageStatus={usageStatus} openPayment={openPayment} robloxApi={robloxApi} setRobloxApi={setRobloxApi} adminAccess={adminAccess} notify={notify} /></main></div><PaymentQrModal open={paymentOpen} close={() => setPaymentOpen(false)} image={paymentConfig.qrUrl} paymentTarget={paymentConfig.paymentTarget} plan={selectedPlan} orderStatus={orderStatus} createPaymentOrder={createPaymentOrder} uploadProof={uploadProof} proofFile={proofFile} setProofFile={setProofFile} chatRoom={chatRoom} chatInput={chatInput} setChatInput={setChatInput} sendChat={() => {}} loadChat={() => {}} /><ToastNotification toast={toast} dismiss={() => setToast(null)} /></div>;
 }
 
 function LoginScreen() { const [configured, setConfigured] = useState(null); useEffect(() => { fetch('/api/auth/config').then((response) => response.json()).then((data) => setConfigured(data.googleConfigured)).catch(() => setConfigured(false)); }, []); return <main className="login-screen"><div className="login-grid"></div><section className="login-card"><div className="login-brand"><span className="brand-icon"><Zap size={18} fill="currentColor" /></span><span><strong>RIVAL DEV</strong><small>CREATOR SUITE</small></span></div><div className="login-icon"><Music2 size={23} /></div><span className="eyebrow">AUDIO WORKSPACE</span><h1>Make your sound<br /><em>stand out.</em></h1><p>Sign in to convert, organize, and publish audio for your Roblox experiences.</p><button className="google-button" onClick={() => { window.location.href = '/auth/google'; }}><span>G</span>{configured === false ? 'Configure Google OAuth' : 'Continue with Google'}<ArrowUpRight size={16} /></button></section></main>; }
