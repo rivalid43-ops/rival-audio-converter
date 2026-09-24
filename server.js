@@ -357,6 +357,8 @@ function logRobloxUploadRequest(req, stage) {
 }
 function robloxUploadMiddleware(req, res, next) {
   logRobloxUploadRequest(req, 'before-multipart-parser');
+  const contentType = String(req.get('content-type') || '').toLowerCase();
+  if (!contentType.startsWith('multipart/form-data;')) return res.status(400).json({ success: false, error: 'Upload Roblox wajib menggunakan multipart/form-data.' });
   const contentLengthHeader = req.get('content-length');
   if (contentLengthHeader !== undefined && contentLengthHeader !== '' && Number(contentLengthHeader) === 0) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
   robloxUpload.single('audio')(req, res, (error) => {
@@ -653,8 +655,7 @@ function audioContentType(file) {
   return ({ '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4', '.webm': 'audio/webm' })[extension] || '';
 }
 function validRobloxAudioFile(file) {
-  const mime = String(file?.mimetype || '').toLowerCase();
-  return Boolean(audioContentType(file) && mime.startsWith('audio/'));
+  return Boolean(audioContentType(file));
 }
 function isValidAssetId(value) { return Number.isInteger(value) && value > 0; }
 function extractRobloxAssetId(data) {
@@ -1331,9 +1332,7 @@ app.post('/api/roblox/upload-audio', robloxUploadMiddleware, async (req, res) =>
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   if (!req.file) {
-    const contentLength = Number(req.get('content-length') || 0);
-    if (!Object.keys(req.body).length && contentLength === 0) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
-    return res.status(400).json({ success: false, error: 'Audio file is required.' });
+    return res.status(400).json({ success: false, error: 'Backend tidak menerima file audio pada field "audio".' });
   }
   const fileStat = fs.statSync(req.file.path);
   if (!fileStat.size) {

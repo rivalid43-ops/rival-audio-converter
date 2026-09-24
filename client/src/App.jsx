@@ -85,26 +85,29 @@ function audioMimeForName(name) {
 }
 async function readValidatedAudioBlob(url, name) {
   const response = await fetch(url, { credentials: 'include' });
-  if (!response.ok) throw new Error('Audio output is not available.');
+  if (!response.ok) throw new Error('Audio tidak tersedia untuk upload ke Roblox.');
   const blob = await response.blob();
-  const file = new File([blob], name, { type: blob.type || audioMimeForName(name) });
+  if (!(blob instanceof Blob) || blob.size <= 0) throw new Error('Blob audio kosong.');
+  const type = blob.type.startsWith('audio/') ? blob.type : audioMimeForName(name);
+  if (!type) throw new Error('Format audio hasil tidak dapat dikenali.');
+  const file = new File([blob], name, { type });
   const error = validateAudioInput(file);
   if (error) throw new Error(error);
   if (!file.type.startsWith('audio/')) throw new Error('Unsupported audio format.');
   return file;
 }
 async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
-  if (!result?.downloadUrl || !result.name) throw new Error('Audio output is required.');
+  if (!result?.downloadUrl || !result.name) throw new Error('Audio tidak tersedia untuk upload ke Roblox.');
   if (!Number.isFinite(Number(robloxPlaybackSpeed)) || Number(robloxPlaybackSpeed) <= 0 || Number(robloxPlaybackSpeed) > 16) throw new Error('Roblox Speed must be between 0.01 and 16.00.');
   setStatus('Preparing');
-  const blob = await readValidatedAudioBlob(result.downloadUrl, result.name);
+  const file = await readValidatedAudioBlob(result.downloadUrl, result.name);
   const form = new FormData();
-  form.append('audio', blob, result.name);
+  form.append('audio', file, file.name);
   form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
   form.append('robloxPlaybackSpeed', String(robloxPlaybackSpeed));
+  if (!form.has('audio')) throw new Error('FormData tidak berisi file audio.');
   const audioPart = form.get('audio');
-  if (!(audioPart instanceof Blob) || audioPart.size <= 0 || !audioPart.type.startsWith('audio/')) throw new Error('Audio file is required.');
-  console.info('[Roblox upload debug]', { endpoint: '/api/roblox/upload-audio', method: 'POST', bodyPresent: true, fields: Array.from(form.keys()), filename: blob.name, mimeType: blob.type, fileSize: blob.size });
+  if (!(audioPart instanceof File) || audioPart.size <= 0) throw new Error('File audio kosong atau tidak valid.');
   setStatus('Uploading');
   let response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
   let data = await response.json().catch(() => ({}));
