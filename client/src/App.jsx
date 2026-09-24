@@ -102,12 +102,13 @@ async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
   setStatus('Preparing');
   const file = await readValidatedAudioBlob(result.downloadUrl, result.name);
   const form = new FormData();
-  form.append('audio', file, file.name);
+  form.append('file', file, file.name);
   form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
   form.append('robloxPlaybackSpeed', String(robloxPlaybackSpeed));
-  if (!form.has('audio')) throw new Error('FormData tidak berisi file audio.');
-  const audioPart = form.get('audio');
+  if (!form.has('file')) throw new Error('FormData tidak berisi file audio.');
+  const audioPart = form.get('file');
   if (!(audioPart instanceof File) || audioPart.size <= 0) throw new Error('File audio kosong atau tidak valid.');
+  console.info('[Roblox upload debug]', { endpoint: '/api/roblox/upload-audio', audioFileSize: audioPart.size, audioFileType: audioPart.type, audioFileName: audioPart.name, formDataKeys: Array.from(form.keys()) });
   setStatus('Uploading');
   let response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
   let data = await response.json().catch(() => ({}));

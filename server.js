@@ -359,7 +359,7 @@ function robloxUploadMiddleware(req, res, next) {
   logRobloxUploadRequest(req, 'before-multipart-parser');
   const contentType = String(req.get('content-type') || '').toLowerCase();
   if (!contentType.startsWith('multipart/form-data;')) return res.status(400).json({ success: false, error: 'Upload Roblox wajib menggunakan multipart/form-data.' });
-  robloxUpload.single('audio')(req, res, (error) => {
+  robloxUpload.single('file')(req, res, (error) => {
     logRobloxUploadRequest(req, 'after-multipart-parser');
     if (!error) {
       if (req.body === undefined || req.body === null) req.body = {};
