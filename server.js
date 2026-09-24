@@ -340,15 +340,31 @@ const robloxUpload = multer({
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => validRobloxAudioFile(file) ? cb(null, true) : cb(new Error('UNSUPPORTED_AUDIO_FORMAT'))
 });
+function logRobloxUploadRequest(req, stage) {
+  console.info('[Roblox upload debug]', {
+    stage,
+    endpoint: req.originalUrl,
+    method: req.method,
+    contentType: req.get('content-type') || null,
+    contentLength: req.get('content-length') || null,
+    bodyPresent: req.body !== undefined && req.body !== null,
+    hasFile: Boolean(req.file),
+    filename: req.file?.originalname || null,
+    mimeType: req.file?.mimetype || null,
+    fileSize: req.file?.size || 0
+  });
+}
 function robloxUploadMiddleware(req, res, next) {
-  const contentLength = Number(req.get('content-length') || 0);
-  if (contentLength === 0 && !req.headers['transfer-encoding']) return res.status(400).json({ success: false, error: 'Request body is empty' });
+  logRobloxUploadRequest(req, 'before-multipart-parser');
+  const contentLengthHeader = req.get('content-length');
+  if (contentLengthHeader !== undefined && contentLengthHeader !== '' && Number(contentLengthHeader) === 0) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
   robloxUpload.single('audio')(req, res, (error) => {
+    logRobloxUploadRequest(req, 'after-multipart-parser');
     if (!error) return next();
-    if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'File is too large' });
-    if (error.code === 'LIMIT_UNEXPECTED_FILE' || error.message === 'UNSUPPORTED_AUDIO_FORMAT') return res.status(415).json({ success: false, error: 'Unsupported audio format' });
+    if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'Audio file is too large.' });
+    if (error.code === 'LIMIT_UNEXPECTED_FILE' || error.message === 'UNSUPPORTED_AUDIO_FORMAT') return res.status(415).json({ success: false, error: 'Unsupported audio format.' });
     if (error instanceof multer.MulterError) return res.status(400).json({ success: false, error: 'Invalid multipart/form-data request' });
-    return res.status(415).json({ success: false, error: 'Unsupported audio format' });
+    return res.status(415).json({ success: false, error: 'Unsupported audio format.' });
   });
 }
 async function getPaymentSettings() {
@@ -1245,26 +1261,27 @@ app.get('/api/download/:file', async (req, res) => {
 });
 
 app.post('/api/roblox/upload-audio', robloxUploadMiddleware, async (req, res) => {
+  logRobloxUploadRequest(req, 'upload-handler');
   if (!requireUser(req, res)) return;
   if (!requireRobloxSecret(res)) return;
-  if (req.body === undefined || req.body === null) return res.status(400).json({ success: false, error: 'Request body is empty' });
+  if (req.body === undefined || req.body === null) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   if (!req.file) {
     const contentLength = Number(req.get('content-length') || 0);
-    if (!Object.keys(req.body).length && contentLength === 0) return res.status(400).json({ success: false, error: 'Request body is empty' });
-    return res.status(400).json({ success: false, error: 'Audio file is required' });
+    if (!Object.keys(req.body).length && contentLength === 0) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
+    return res.status(400).json({ success: false, error: 'Audio file is required.' });
   }
   const fileStat = fs.statSync(req.file.path);
   if (!fileStat.size) {
     cleanup(req.file.path);
-    return res.status(400).json({ success: false, error: 'Audio file is empty' });
+    return res.status(400).json({ success: false, error: 'Audio file is empty.' });
   }
   const contentType = audioContentType(req.file);
   if (!contentType) {
     cleanup(req.file.path);
-    return res.status(415).json({ success: false, error: 'Unsupported audio format' });
+    return res.status(415).json({ success: false, error: 'Unsupported audio format.' });
   }
   const creatorType = session?.creatorType === 'group' ? 'group' : 'user';
   const creatorId = String(session?.creatorId || session?.userId || 'Unknown').trim();

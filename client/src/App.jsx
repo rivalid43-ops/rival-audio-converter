@@ -80,13 +80,18 @@ function validateAudioInput(candidate) {
   return '';
 }
 function validAssetId(value) { return /^\d+$/.test(String(value || '').trim()) && Number(value) > 0; }
+function audioMimeForName(name) {
+  return ({ '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4', '.webm': 'audio/webm' })[String(name).toLowerCase().match(/\.[^.]+$/)?.[0]] || '';
+}
 async function readValidatedAudioBlob(url, name) {
   const response = await fetch(url, { credentials: 'include' });
   if (!response.ok) throw new Error('Audio output is not available.');
   const blob = await response.blob();
-  const error = validateAudioInput(new File([blob], name, { type: blob.type }));
+  const file = new File([blob], name, { type: blob.type || audioMimeForName(name) });
+  const error = validateAudioInput(file);
   if (error) throw new Error(error);
-  return blob;
+  if (!file.type.startsWith('audio/')) throw new Error('Unsupported audio format.');
+  return file;
 }
 async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
   if (!result?.downloadUrl || !result.name) throw new Error('Audio output is required.');
@@ -97,6 +102,7 @@ async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
   form.append('audio', blob, result.name);
   form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
   form.append('robloxPlaybackSpeed', String(robloxPlaybackSpeed));
+  console.info('[Roblox upload debug]', { endpoint: '/api/roblox/upload-audio', method: 'POST', bodyPresent: true, fields: Array.from(form.keys()), filename: blob.name, mimeType: blob.type, fileSize: blob.size });
   setStatus('Uploading');
   let response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
   let data = await response.json().catch(() => ({}));
@@ -203,7 +209,7 @@ function LegacyRemixPage({ notify }) {
   const stopPreview = () => { if (!audioRef.current) return; audioRef.current.pause(); audioRef.current.currentTime = 0; setPreviewing(false); };
   const exportRemix = async () => { if (!file) return; setBusy(true); setResult(null); const form = new FormData(); form.append('audio', file); form.append('speed', String(selectedSpeed)); form.append('format', format); try { const response = await fetch('/api/remix', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setResult(data); notify({ type: 'success', title: 'Remix Berhasil', message: 'Final remix audio berhasil dibuat dan siap dipreview.' }); } catch (error) { setResult({ error: error.message }); notify({ type: 'error', title: 'Remix Gagal', message: error.message || 'Proses remix gagal.' }); } finally { setBusy(false); } };
   const downloadRemix = async () => { if (!result?.downloadUrl) return; setDownloadBusy(true); try { const response = await fetch(result.downloadUrl, { credentials: 'include' }); if (!response.ok) throw new Error('File hasil tidak ditemukan.'); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = result.name; link.click(); URL.revokeObjectURL(url); notify({ type: 'success', title: 'Download Berhasil', message: 'Final remix audio berhasil didownload.' }); } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Download Gagal', message: error.message || 'File hasil tidak dapat didownload.' }); } finally { setDownloadBusy(false); } };
-  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); let processingTimer; let pollTimer; const showSuccess = (data) => { setResult((current) => ({ ...current, assetId: data.assetId, robloxPlaybackSpeed: Number(data.remixMetadata?.robloxPlaybackSpeed || current.robloxPlaybackSpeed || robloxSpeed), audioIsOriginal: false, remixMetadata: data.remixMetadata })); notify({ type: 'success', title: 'Upload Berhasil', message: 'Audio berhasil disimpan ke Roblox.', action: { label: 'Copy Asset ID', onClick: () => navigator.clipboard.writeText(String(data.assetId)) } }); }; const pollOperation = async (operationId) => { for (let attempt = 0; attempt < 40; attempt += 1) { notify({ type: 'progress', title: 'Processing...', message: 'Roblox sedang memproses audio.', duration: 0 }); const pollResponse = await fetch(`/api/roblox/operations/${encodeURIComponent(operationId)}`, { credentials: 'include' }); const pollData = await pollResponse.json().catch(() => ({})); if (pollResponse.ok && pollData.success && pollData.assetId) { showSuccess(pollData); return; } if (pollResponse.status !== 202) throw new Error(pollData.error || 'Roblox gagal memproses audio.'); await new Promise((resolve) => { pollTimer = window.setTimeout(resolve, 3000); }); } throw new Error('Roblox masih memproses audio. Coba cek kembali beberapa saat lagi.'); }; notify({ type: 'progress', title: 'Uploading...', message: 'Sedang mengupload audio ke Roblox.' }); processingTimer = window.setTimeout(() => notify({ type: 'progress', title: 'Processing...', message: 'Roblox sedang memproses audio.', duration: 0 }), 1500); try { const blob = await fetch(result.downloadUrl, { credentials: 'include' }).then((response) => response.blob()); const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('remixSpeed', String(result.remixSpeed)); form.append('robloxPlaybackSpeed', String(result.robloxPlaybackSpeed)); form.append('originalFilename', String(result.originalFilename || file?.name || '')); form.append('remixFilename', String(result.remixFilename || result.name)); const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form }); const data = await response.json(); if (response.status === 202 && data.operationId) { await pollOperation(data.operationId); } else { if (!response.ok || data.success !== true || !data.assetId) throw new Error(data.error || 'Roblox tidak mengembalikan Asset ID.'); showSuccess(data); } } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Upload Gagal', message: error.message || 'Upload ke Roblox gagal.' }); } finally { window.clearTimeout(processingTimer); window.clearTimeout(pollTimer); setUploadBusy(false); } };
+  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); try { const data = await uploadResultToRoblox(result, result.robloxPlaybackSpeed || robloxSpeed, (status) => notify({ type: status === 'Success' ? 'success' : status === 'Failed' ? 'error' : 'progress', title: status, message: status === 'Processing' ? 'Roblox sedang memproses audio.' : 'Sedang mengirim audio ke Roblox.', duration: status === 'Success' || status === 'Failed' ? undefined : 0 })); setResult((current) => ({ ...current, assetId: data.assetId, robloxPlaybackSpeed: Number(data.remixMetadata?.robloxPlaybackSpeed || current.robloxPlaybackSpeed || robloxSpeed), audioIsOriginal: false, remixMetadata: data.remixMetadata })); notify({ type: 'success', title: 'Upload Berhasil', message: 'Audio berhasil disimpan ke Roblox.', action: { label: 'Copy Asset ID', onClick: () => navigator.clipboard.writeText(String(data.assetId)) } }); } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Upload Gagal', message: error.message || 'Upload ke Roblox gagal.' }); } finally { setUploadBusy(false); } };
   const copyRobloxSpeed = () => navigator.clipboard.writeText(String(robloxSpeed));
   return <section className="panel standalone-panel remix-page"><div className="panel-heading"><div><span className="eyebrow">AUDIO REMIX</span><h2>Remix Musik</h2></div><span className="safe-badge"><LockKeyhole size={12} /> LOCAL PREVIEW</span></div><label className="drop-area remix-drop"><input type="file" accept="audio/*" onChange={(event) => chooseFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>{file ? file.name : 'Upload audio untuk remix'}</strong><span>MP3, WAV, OGG, M4A, FLAC hingga 100 MB</span></label>{file && <><canvas ref={canvasRef} className="remix-waveform" width="1000" height="180" /><audio ref={audioRef} src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} /><div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="1.00">1.00</option><option value="1.20">1.20</option><option value="1.50">1.50</option><option value="2.00">2.00</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
       <div className="result-actions"><button className="primary-button" onClick={togglePreview}>{previewing ? <><PauseIcon /> Pause Tes</> : <><Play size={16} /> Play Tes</>}</button><button className="secondary-button" onClick={() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPreviewing(false); }}>Stop</button><button className="convert-button" disabled={busy} onClick={exportRemix}>{busy ? 'Remixing...' : 'Export Remix'} <ArrowUpRight size={16} /></button></div>
@@ -743,30 +749,9 @@ function App() {
   const upload = async () => {
     if (!result?.downloadUrl) return setNotice('Convert audio dahulu.');
     if (!robloxApi.connected) return setNotice('Connect Roblox API terlebih dahulu.');
-    setBusy(true); setNotice('Status: Uploading');
+    setBusy(true); setNotice('Status: Preparing');
     try {
-      const downloadResponse = await fetch(result.downloadUrl, { credentials: 'include' });
-      if (!downloadResponse.ok) {
-        const downloadData = await downloadResponse.json().catch(() => ({}));
-        throw new Error(downloadData.error || 'Hasil audio tidak dapat dibaca.');
-      }
-      const blob = await readValidatedAudioBlob(result.downloadUrl, result.name);
-      const form = new FormData(); form.append('audio', blob, result.name); form.append('displayName', result.name.replace(/\.[^.]+$/, '')); form.append('robloxPlaybackSpeed', String(result.robloxPlaybackSpeed || 1));
-      const response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
-      let data = await response.json().catch(() => ({}));
-      if (response.status === 202 && data.operationId) {
-        setNotice('Status: Processing');
-        for (let attempt = 0; attempt < 40; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 3000));
-          const pollResponse = await fetch(`/api/roblox/operations/${encodeURIComponent(data.operationId)}`, { credentials: 'include' });
-          data = await pollResponse.json().catch(() => ({}));
-          if (pollResponse.ok && data.success && data.assetId) break;
-          if (pollResponse.status !== 202) throw new Error(data.error || 'Roblox gagal memproses audio.');
-          if (attempt === 39) throw new Error(data.error || 'Roblox masih memproses audio. Coba lagi beberapa saat lagi.');
-        }
-      }
-      if (!response.ok && !data.success) throw new Error(data.error || 'Upload ke Roblox gagal.');
-      if (data.success !== true || !validAssetId(data.assetId)) throw new Error(data.error || 'Roblox belum mengembalikan Asset ID final.');
+      const data = await uploadResultToRoblox(result, result.robloxPlaybackSpeed || 1, (status) => setNotice(`Status: ${status}`));
       setResult((current) => ({ ...current, assetId: data.assetId }));
       setHistory((items) => [{ name: result.name, format: result.format.toUpperCase(), duration: '—', status: 'SUCCESS', id: data.assetId, date: 'Just now' }, ...items]);
       setNotice(`Status: Success · Asset ID ${data.assetId}`);
