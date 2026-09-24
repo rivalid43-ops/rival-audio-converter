@@ -38,6 +38,7 @@ const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
 const paymentDatabaseFile = path.join(root, 'database', 'payments.sqlite');
 const ffmpegCommand = String(process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg').trim();
+const ytDlpCommand = String(process.env.YT_DLP_PATH || 'yt-dlp').trim();
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(outputDir, { recursive: true });
 fs.mkdirSync(path.dirname(paymentDatabaseFile), { recursive: true });
@@ -313,7 +314,7 @@ setInterval(() => {
 app.use(['/api/payments', '/api/chats'], async (req, res, next) => {
   try { await paymentDatabaseReady; next(); } catch (error) { res.status(503).json({ error: 'Database pembayaran belum siap.' }); }
 });
-app.use(['/api/convert', '/api/optimize', '/api/remix', '/api/source/download', '/api/roblox/upload-audio'], (req, res, next) => {
+app.use(['/api/convert', '/api/optimize', '/api/remix', '/api/source/download', '/api/youtube/download', '/api/roblox/upload-audio'], (req, res, next) => {
   if (!requireUser(req, res)) return;
   usageGuard(req, res, next);
 });
@@ -500,6 +501,36 @@ async function downloadRemoteSource(sourceUrl) {
   } finally {
     clearTimeout(timer);
   }
+}
+function isYoutubeUrl(sourceUrl) {
+  try {
+    const parsed = new URL(sourceUrl);
+    return ['youtube.com', 'www.youtube.com', 'youtu.be', 'www.youtube-nocookie.com'].includes(parsed.hostname.toLowerCase()) && Boolean(youtubeVideoId(parsed));
+  } catch {
+    return false;
+  }
+}
+function downloadYoutubeAudio(sourceUrl) {
+  if (!isYoutubeUrl(sourceUrl)) return Promise.reject(new Error('URL YouTube tidak valid.'));
+  const baseName = path.join(uploadDir, `${crypto.randomUUID()}.youtube`);
+  const outputTemplate = `${baseName}.%(ext)s`;
+  const args = ['--no-playlist', '--no-warnings', '--restrict-filenames', '--max-filesize', '100M', '--socket-timeout', '20', '--retries', '2', '-f', 'bestaudio/best', '-x', '--audio-format', 'wav', '--audio-quality', '0', '-o', outputTemplate, sourceUrl];
+  return new Promise((resolve, reject) => {
+    let errorOutput = '';
+    const child = spawn(ytDlpCommand, args, { windowsHide: true });
+    const timeout = setTimeout(() => child.kill('SIGTERM'), 120000);
+    child.stderr.on('data', (chunk) => { errorOutput += chunk.toString(); });
+    child.on('error', (error) => { clearTimeout(timeout); reject(error.code === 'ENOENT' ? new Error('yt-dlp belum terpasang. Atur YT_DLP_PATH atau pasang yt-dlp di server.') : error); });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      const outputPath = `${baseName}.wav`;
+      if (code !== 0) { cleanup(outputPath); return reject(new Error(errorOutput.slice(-800) || 'YouTube audio download gagal.')); }
+      try {
+        const stat = assertOutputFile(outputPath);
+        resolve({ path: outputPath, originalName: `${safeName(youtubeVideoId(new URL(sourceUrl)) || 'youtube-audio')}.wav`, contentType: 'audio/wav', size: stat.size });
+      } catch (error) { cleanup(outputPath); reject(error); }
+    });
+  });
 }
 
 function googleReady() {
@@ -1128,6 +1159,35 @@ app.post('/api/source/detect', async (req, res) => {
     const reason = error.name === 'AbortError' ? 'Metadata provider timeout.' : error.message;
     console.warn('[Source detect] provider failed', { platform, status: reason });
     res.status(502).json({ ok: false, platform, error: `Metadata ${platform} tidak dapat diakses: ${reason}` });
+  }
+});
+app.post('/api/youtube/download', async (req, res) => {
+  const sourceUrl = String(req.body?.url || '').trim();
+  const format = String(req.body?.format || 'mp3').toLowerCase();
+  const speed = parseAudioSpeed(req.body?.speed, 1);
+  const robloxPlaybackSpeed = parseRobloxSpeed(req.body?.robloxPlaybackSpeed, 1);
+  if (!isYoutubeUrl(sourceUrl)) return res.status(400).json({ ok: false, error: 'URL YouTube tidak valid.' });
+  if (!['mp3', 'wav', 'ogg', 'flac'].includes(format)) return res.status(400).json({ ok: false, error: 'Format output tidak didukung.' });
+  if (speed === null) return res.status(400).json({ ok: false, error: 'Play Speed harus antara 0.50 dan 4.00.' });
+  if (robloxPlaybackSpeed === null) return res.status(400).json({ ok: false, error: 'Roblox Speed harus antara 0.01 dan 16.00.' });
+  let source;
+  const id = crypto.randomUUID();
+  const outputName = `${id}.${format}`;
+  const output = path.join(outputDir, outputName);
+  try {
+    source = await downloadYoutubeAudio(sourceUrl);
+    const codecArgs = format === 'wav' ? ['-c:a', 'pcm_s16le'] : format === 'flac' ? ['-c:a', 'flac'] : format === 'ogg' ? ['-c:a', 'libvorbis', '-q:a', '6'] : ['-c:a', 'libmp3lame', '-b:a', '192k'];
+    await runFfmpeg(source.path, output, [...audioFilterArgs(speed), ...codecArgs]);
+    const stat = assertOutputFile(output);
+    await validateAudioFile(output);
+    outputOwners.set(outputName, requestEmail(req));
+    await saveOutputOwner(outputName, requestEmail(req));
+    setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
+    return res.json({ ok: true, id, name: `youtube-${id}.${format}`, format, speed, robloxPlaybackSpeed, size: stat.size, downloadUrl: `/api/download/${outputName}`, sourceUrl });
+  } catch (error) {
+    cleanup(source?.path, output);
+    const message = error.message || 'YouTube audio tidak dapat diproses.';
+    return res.status(message.includes('yt-dlp belum') ? 503 : 502).json({ ok: false, error: message });
   }
 });
 app.post('/api/source/download', async (req, res) => {

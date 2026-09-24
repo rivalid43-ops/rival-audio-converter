@@ -306,9 +306,10 @@ function YoutubePage({ navigate, result, setResult, upload, robloxApi }) {
       const detectResponse = await fetch('/api/source/detect', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
       const detected = await detectResponse.json().catch(() => ({}));
       if (!detectResponse.ok || detected.ok !== true) throw new Error(detected.error || 'Platform atau source tidak dapat dideteksi.');
-      if (!detected.audio?.available) throw new Error(`${detected.platform}: Metadata tersedia, audio belum dapat diproses. ${detected.audio?.reason || ''}`.trim());
+      if (detected.platform !== 'youtube' && !detected.audio?.available) throw new Error(`${detected.platform}: Metadata tersedia, audio belum dapat diproses. ${detected.audio?.reason || ''}`.trim());
         if (!Number.isFinite(Number(robloxSpeed)) || Number(robloxSpeed) <= 0 || Number(robloxSpeed) > 16) throw new Error('Roblox speed harus antara 0.01 dan 16.00.');
-        const response = await fetch('/api/source/download', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ url, format, speed, robloxPlaybackSpeed: robloxSpeed }) });
+        const endpoint = detected.platform === 'youtube' ? '/api/youtube/download' : '/api/source/download';
+        const response = await fetch(endpoint, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ url, format, speed, robloxPlaybackSpeed: robloxSpeed }) });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok !== true) throw new Error(data.error || 'Audio dari URL tidak dapat diproses.');
       setResult(data);

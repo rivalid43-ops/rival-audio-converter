@@ -6,6 +6,7 @@ Premium React + Vite dashboard untuk mengonversi audio dan mengunggah asset ke R
 
 - Node.js 18 atau lebih baru
 - FFmpeg terpasang dan tersedia di `PATH`
+- `yt-dlp` terpasang dan tersedia di `PATH` untuk konversi URL YouTube yang pengguna berhak gunakan
 - Roblox Open Cloud API key dan Creator/User ID yang memiliki izin upload audio
 
 ## Install dan jalankan

@@ -1,6 +1,6 @@
 [phases.setup]
-aptPkgs = ["ffmpeg"]
-nixPkgs = ["ffmpeg"]
+aptPkgs = ["ffmpeg", "yt-dlp"]
+nixPkgs = ["ffmpeg", "yt-dlp"]
 
 [phases.build]
 cmds = ["ffmpeg -version", "npm run build"]
