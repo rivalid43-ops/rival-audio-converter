@@ -360,7 +360,10 @@ function robloxUploadMiddleware(req, res, next) {
   if (contentLengthHeader !== undefined && contentLengthHeader !== '' && Number(contentLengthHeader) === 0) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
   robloxUpload.single('audio')(req, res, (error) => {
     logRobloxUploadRequest(req, 'after-multipart-parser');
-    if (!error) return next();
+    if (!error) {
+      if (req.body === undefined || req.body === null) req.body = {};
+      return next();
+    }
     if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'Audio file is too large.' });
     if (error.code === 'LIMIT_UNEXPECTED_FILE' || error.message === 'UNSUPPORTED_AUDIO_FORMAT') return res.status(415).json({ success: false, error: 'Unsupported audio format.' });
     if (error instanceof multer.MulterError) return res.status(400).json({ success: false, error: 'Invalid multipart/form-data request' });
@@ -1264,7 +1267,6 @@ app.post('/api/roblox/upload-audio', robloxUploadMiddleware, async (req, res) =>
   logRobloxUploadRequest(req, 'upload-handler');
   if (!requireUser(req, res)) return;
   if (!requireRobloxSecret(res)) return;
-  if (req.body === undefined || req.body === null) return res.status(400).json({ success: false, error: 'Request body cannot be empty.' });
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });

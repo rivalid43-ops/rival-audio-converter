@@ -102,6 +102,8 @@ async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
   form.append('audio', blob, result.name);
   form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
   form.append('robloxPlaybackSpeed', String(robloxPlaybackSpeed));
+  const audioPart = form.get('audio');
+  if (!(audioPart instanceof Blob) || audioPart.size <= 0 || !audioPart.type.startsWith('audio/')) throw new Error('Audio file is required.');
   console.info('[Roblox upload debug]', { endpoint: '/api/roblox/upload-audio', method: 'POST', bodyPresent: true, fields: Array.from(form.keys()), filename: blob.name, mimeType: blob.type, fileSize: blob.size });
   setStatus('Uploading');
   let response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
