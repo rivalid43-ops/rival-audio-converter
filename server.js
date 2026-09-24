@@ -9,6 +9,8 @@ const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const { spawn } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 
 const root = __dirname;
 dotenv.config({ path: path.resolve(root, '.env') });
@@ -19,7 +21,7 @@ const isProduction = process.env.NODE_ENV === 'production' || isRailway;
 const googleClientId = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 const googleClientSecret = String(process.env.GOOGLE_CLIENT_SECRET || '').trim();
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
-const paymentAdminEmail = String(process.env.PAYMENT_ADMIN_EMAIL || 'rivalid43@gmail.com').trim().toLowerCase();
+const paymentAdminEmail = String(process.env.PAYMENT_ADMIN_EMAIL || '').trim().toLowerCase();
 if (!String(process.env.GOOGLE_REDIRECT_URI || '').trim()) console.error('Google OAuth belum aktif: GOOGLE_REDIRECT_URI wajib diatur di environment variable.');
 if (!publicBaseUrl) console.error('Google OAuth callback belum lengkap: PUBLIC_BASE_URL wajib diatur di environment variable.');
 const configuredSessionSecret = String(process.env.SESSION_SECRET || '').trim();
@@ -50,6 +52,19 @@ app.use(session({
   store: isProduction ? new SQLiteStore({ db: 'sessions.sqlite', dir: path.join(root, 'database') }) : undefined,
   cookie: { httpOnly: true, sameSite: 'lax', secure: isProduction, maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
+const allowedRequestOrigins = new Set([publicBaseUrl, 'http://localhost:3000', 'http://localhost:5173'].filter(Boolean));
+app.use((req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || !req.path.startsWith('/api/')) return next();
+  const origin = String(req.get('Origin') || '').replace(/\/$/, '');
+  const referer = String(req.get('Referer') || '');
+  if (origin && !allowedRequestOrigins.has(origin)) return res.status(403).json({ error: 'Origin request tidak diizinkan.' });
+  if (!origin && referer) {
+    try {
+      if (!allowedRequestOrigins.has(new URL(referer).origin)) return res.status(403).json({ error: 'Referer request tidak diizinkan.' });
+    } catch { return res.status(403).json({ error: 'Referer request tidak valid.' }); }
+  }
+  next();
+});
 const clientDist = path.join(root, 'client', 'dist');
 if (fs.existsSync(clientDist)) app.use(express.static(clientDist, { dotfiles: 'deny', index: false }));
 
@@ -123,6 +138,10 @@ async function initializePaymentDatabase() {
   await databaseRun(`CREATE TABLE IF NOT EXISTS usage_events (
     event_key TEXT PRIMARY KEY, usage_key TEXT NOT NULL, route TEXT NOT NULL, created_at TEXT NOT NULL
   )`);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS roblox_asset_history (
+    owner_email TEXT NOT NULL, asset_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+    remix_metadata TEXT, PRIMARY KEY (owner_email, asset_id)
+  )`);
   await databaseRun(`CREATE TABLE IF NOT EXISTS credit_balances (
     customer_email TEXT PRIMARY KEY, credits INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL
   )`);
@@ -132,9 +151,21 @@ async function initializePaymentDatabase() {
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1), payment_target TEXT NOT NULL, qr_image TEXT, updated_at TEXT NOT NULL
   )`);
-  await databaseRun('INSERT OR IGNORE INTO payment_settings (id, payment_target, qr_image, updated_at) VALUES (1, ?, ?, ?)', [String(process.env.PAYMENT_TARGET || 'Transfer manual - tujuan pembayaran belum diatur admin'), String(process.env.PAYMENT_QR_FILE || 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg'), new Date().toISOString()]);
+  await databaseRun(`CREATE TABLE IF NOT EXISTS converted_files (
+    file_name TEXT PRIMARY KEY, owner_email TEXT NOT NULL, created_at TEXT NOT NULL
+  )`);
+  await databaseRun('INSERT OR IGNORE INTO payment_settings (id, payment_target, qr_image, updated_at) VALUES (1, ?, ?, ?)', [String(process.env.PAYMENT_TARGET || ''), String(process.env.PAYMENT_QR_FILE || ''), new Date().toISOString()]);
+  await databaseRun('UPDATE payment_settings SET payment_target = ?, qr_image = ? WHERE id = 1 AND payment_target = ? AND qr_image = ?', ['', '', 'Transfer manual - tujuan pembayaran belum diatur admin', 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg']);
   const orders = await databaseAll('SELECT * FROM payment_orders ORDER BY created_at DESC');
   const messages = await databaseAll('SELECT order_id, sender, text, sent_at FROM payment_messages ORDER BY id ASC');
+  const savedAssets = await databaseAll('SELECT owner_email, asset_id, name, status, created_at, remix_metadata FROM roblox_asset_history ORDER BY created_at DESC');
+  const convertedFiles = await databaseAll('SELECT file_name, owner_email FROM converted_files');
+  convertedFiles.forEach((item) => outputOwners.set(item.file_name, item.owner_email));
+  savedAssets.forEach((item) => {
+    let remixMetadata = null;
+    try { remixMetadata = item.remix_metadata ? JSON.parse(item.remix_metadata) : null; } catch { remixMetadata = null; }
+    history.push({ id: item.asset_id, name: item.name, status: item.status, ownerEmail: item.owner_email, createdAt: item.created_at, remixMetadata });
+  });
   paymentOrders.push(...orders.map((item) => ({
     id: item.id,
     orderNumber: item.order_number,
@@ -192,8 +223,7 @@ async function getUsageState(req) {
 }
 async function commitUsage(req) {
   if (req.usageState?.unlimited || !req.usageState?.allowed) return req.usageState;
-  const eventKey = req.get('Idempotency-Key') || req.get('X-Request-ID');
-  if (!eventKey) return req.usageState;
+  const eventKey = req.get('Idempotency-Key') || req.get('X-Request-ID') || req.usageEventKey;
   await paymentDatabaseReady;
   const result = await databaseRun('INSERT OR IGNORE INTO usage_events (event_key, usage_key, route, created_at) VALUES (?, ?, ?, ?)', [eventKey, usageKey(req), req.path, new Date().toISOString()]);
   if (result.changes !== 1) return req.usageState;
@@ -206,6 +236,7 @@ async function usageGuard(req, res, next) {
     const usage = await getUsageState(req);
     if (!usage.allowed) return res.status(429).json({ error: 'Free limit kamu sudah habis. Kamu sudah menggunakan 5 dari 5 upload gratis. Beli Plan untuk melanjutkan.', code: 'FREE_LIMIT_REACHED', usage });
     req.usageState = usage;
+    req.usageEventKey = crypto.randomUUID();
     res.setHeader('X-Usage-Count', String(usage.used));
     if (usage.limit) res.setHeader('X-Usage-Limit', String(usage.limit));
     res.once('finish', () => {
@@ -217,7 +248,7 @@ async function usageGuard(req, res, next) {
     res.status(503).json({ error: 'Batas penggunaan belum siap.' });
   }
 }
-async function savePaymentData() {
+async function persistPaymentData() {
   await paymentDatabaseReady;
   await databaseRun('BEGIN TRANSACTION');
   try {
@@ -230,6 +261,20 @@ async function savePaymentData() {
     await databaseRun('ROLLBACK');
     throw error;
   }
+}
+let paymentSaveChain = Promise.resolve();
+function savePaymentData() {
+  const next = paymentSaveChain.then(() => persistPaymentData());
+  paymentSaveChain = next.catch(() => {});
+  return next;
+}
+async function saveRobloxAsset(ownerEmail, assetId, name, remixMetadata) {
+  await paymentDatabaseReady;
+  await databaseRun('INSERT OR IGNORE INTO roblox_asset_history (owner_email, asset_id, name, status, created_at, remix_metadata) VALUES (?, ?, ?, ?, ?, ?)', [ownerEmail, String(assetId), name, 'Uploaded', new Date().toISOString(), remixMetadata ? JSON.stringify(remixMetadata) : null]);
+}
+async function saveOutputOwner(fileName, ownerEmail) {
+  await paymentDatabaseReady;
+  await databaseRun('INSERT OR REPLACE INTO converted_files (file_name, owner_email, created_at) VALUES (?, ?, ?)', [fileName, ownerEmail, new Date().toISOString()]);
 }
 const activeVisitors = new Map();
 app.post('/api/presence', (req, res) => {
@@ -246,9 +291,17 @@ setInterval(() => {
 app.use(['/api/payments', '/api/chats'], async (req, res, next) => {
   try { await paymentDatabaseReady; next(); } catch (error) { res.status(503).json({ error: 'Database pembayaran belum siap.' }); }
 });
-app.use(['/api/youtube/validate', '/api/convert', '/api/optimize', '/api/remix', '/api/roblox/upload-audio'], (req, res, next) => {
+app.use(['/api/convert', '/api/optimize', '/api/remix', '/api/source/download', '/api/roblox/upload-audio'], (req, res, next) => {
   if (!requireUser(req, res)) return;
   usageGuard(req, res, next);
+});
+app.use('/api/youtube/validate', (req, res, next) => {
+  if (!requireUser(req, res)) return;
+  next();
+});
+app.use('/api/source/detect', (req, res, next) => {
+  if (!requireUser(req, res)) return;
+  next();
 });
 const upload = multer({
   dest: uploadDir,
@@ -267,6 +320,92 @@ async function getPaymentSettings() {
 }
 function paymentSettingsPayload(settings) {
   return { paymentTarget: settings.payment_target, qrUrl: settings.qr_image ? '/api/payments/qr' : null, updatedAt: settings.updated_at };
+}
+const sourcePlatformHosts = {
+  youtube: new Set(['youtube.com', 'www.youtube.com', 'youtu.be', 'www.youtube-nocookie.com']),
+  soundcloud: new Set(['soundcloud.com', 'www.soundcloud.com', 'on.soundcloud.com']),
+  tiktok: new Set(['tiktok.com', 'www.tiktok.com', 'vm.tiktok.com']),
+  spotify: new Set(['open.spotify.com', 'spotify.link']),
+  appleMusic: new Set(['music.apple.com', 'itunes.apple.com'])
+};
+function detectSourcePlatform(parsedUrl) {
+  const hostname = parsedUrl.hostname.toLowerCase();
+  return Object.entries(sourcePlatformHosts).find(([, hosts]) => hosts.has(hostname))?.[0] || null;
+}
+async function fetchSourceJson(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`Metadata provider returned HTTP ${response.status}.`);
+    return data;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function sourceMetadataPayload(platform, sourceUrl, data) {
+  return {
+    platform,
+    url: sourceUrl,
+    metadata: {
+      title: String(data.title || data.trackName || data.collectionName || '').trim() || null,
+      thumbnail: String(data.thumbnail_url || data.artworkUrl100 || '').trim() || null,
+      durationSeconds: Number.isFinite(Number(data.trackTimeMillis)) ? Math.round(Number(data.trackTimeMillis) / 1000) : null,
+      creator: String(data.author_name || data.artistName || '').trim() || null
+    },
+    audio: { available: false, status: 'NOT_CONNECTED', reason: 'Metadata is available, but this server has no official audio source/download integration.' }
+  };
+}
+async function probeDirectMediaSource(sourceUrl) {
+  let parsedUrl;
+  try { parsedUrl = new URL(sourceUrl); } catch { throw new Error('URL sumber tidak valid.'); }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol) || isBlockedRemoteHost(parsedUrl.hostname)) throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(parsedUrl, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    if (!response.ok) throw new Error(`Sumber mengembalikan HTTP ${response.status}.`);
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+    if (!contentType.startsWith('audio/') && !contentType.startsWith('video/')) throw new Error('URL tidak mengembalikan file audio/video langsung.');
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    if (contentLength > 100 * 1024 * 1024) throw new Error('Ukuran sumber melebihi batas 100 MB.');
+    const name = decodeURIComponent(path.basename(parsedUrl.pathname)) || 'remote-audio';
+    return { platform: 'direct-media', url: parsedUrl.toString(), metadata: { title: name, thumbnail: null, durationSeconds: null, creator: null }, audio: { available: true, status: 'AVAILABLE', contentType, reason: 'Direct media source is available for server-side processing.' } };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function isBlockedRemoteHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) || host === 'metadata.google.internal';
+}
+async function downloadRemoteSource(sourceUrl) {
+  let parsedUrl;
+  try { parsedUrl = new URL(sourceUrl); } catch { throw new Error('URL sumber tidak valid.'); }
+  if (!['http:', 'https:'].includes(parsedUrl.protocol) || isBlockedRemoteHost(parsedUrl.hostname)) throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  const sourcePath = path.join(uploadDir, `${crypto.randomUUID()}.remote`);
+  try {
+    const response = await fetch(parsedUrl, { redirect: 'follow', signal: controller.signal });
+    if (!response.ok) throw new Error(`Sumber mengembalikan HTTP ${response.status}.`);
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    if (contentLength > 100 * 1024 * 1024) throw new Error('Ukuran sumber melebihi batas 100 MB.');
+    if (contentType.startsWith('text/html') || contentType === 'application/json') throw new Error('URL tidak mengembalikan file media langsung. Gunakan URL audio/video langsung.');
+    if (!response.body) throw new Error('Sumber tidak mengembalikan isi file.');
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(sourcePath));
+    const stat = fs.statSync(sourcePath);
+    if (!stat.size || stat.size > 100 * 1024 * 1024) throw new Error('File sumber kosong atau melebihi batas 100 MB.');
+    return { path: sourcePath, originalName: safeName(path.basename(parsedUrl.pathname)) || 'remote-audio', contentType };
+  } catch (error) {
+    cleanup(sourcePath);
+    if (error.name === 'AbortError') throw new Error('Download sumber timeout setelah 30 detik.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function googleReady() {
@@ -328,7 +467,7 @@ function decryptRobloxApiKey(value) {
     return '';
   }
 }
-function requireUser(req, res) { if (!req.session?.googleUser?.id) { res.status(401).json({ error: 'Login Google diperlukan sebelum menghubungkan Roblox.' }); return false; } return true; }
+function requireUser(req, res) { if (!req.session?.googleUser?.id) { res.status(401).json({ error: 'Login Google diperlukan untuk menggunakan fitur ini.' }); return false; } return true; }
 function requireRobloxSecret(res) { if (!robloxKeySecretReady) { res.status(503).json({ error: 'Roblox integration belum aktif. Admin harus mengatur ROBLOX_API_KEY_SECRET sebagai Railway Environment Variable.' }); return false; } return true; }
 function getRobloxApiSession(req) {
   const connectionId = req.session?.robloxApiConnectionId;
@@ -348,28 +487,111 @@ function clearRobloxApiSession(req) {
   delete req.session.robloxApiConnectionId;
 }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function robloxResponseHeaders(response) {
+  return ['content-type', 'location', 'retry-after', 'x-request-id', 'trace-id']
+    .reduce((headers, name) => {
+      const value = response.headers.get(name);
+      if (value) headers[name] = value.slice(0, 200);
+      return headers;
+    }, {});
+}
+function sanitizeRobloxLog(value) {
+  return String(value || '')
+    .replace(/(x-api-key|authorization|cookie|token|secret|password)\s*[:=]\s*[^,\s}]+/gi, '$1=[redacted]')
+    .slice(0, 1500);
+}
+function logRobloxResponse(label, response, rawBody, data) {
+  console.warn(`[Roblox ${label}] response`, {
+    status: response.status,
+    headers: robloxResponseHeaders(response),
+    body: sanitizeRobloxLog(rawBody),
+    parsed: summarizeRobloxResponse(data)
+  });
+}
+async function readRobloxResponse(response) {
+  const rawBody = await response.text();
+  let data = {};
+  try { data = rawBody ? JSON.parse(rawBody) : {}; } catch { data = { raw: rawBody }; }
+  return { rawBody, data };
+}
+function extractAssetIdFromValue(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
+  const text = String(value || '').trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const match = text.match(/(?:^|\/)assets?\/(\d+)(?:$|[/?#])/i);
+  return match ? Number(match[1]) : 0;
+}
+function audioContentType(file) {
+  const knownTypes = new Set(['audio/mpeg', 'audio/wav', 'audio/x-wav', 'audio/ogg', 'audio/flac', 'audio/aac', 'audio/mp4', 'audio/webm']);
+  if (knownTypes.has(String(file?.mimetype || '').toLowerCase())) return String(file.mimetype).toLowerCase() === 'audio/x-wav' ? 'audio/wav' : String(file.mimetype).toLowerCase();
+  const extension = path.extname(String(file?.originalname || '')).toLowerCase();
+  return ({ '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4', '.webm': 'audio/webm' })[extension] || '';
+}
 function extractRobloxAssetId(data) {
-  const candidates = [data?.assetId, data?.response?.assetId, data?.result?.assetId, data?.response?.result?.assetId, data?.operation?.assetId];
-  const value = candidates.find((candidate) => /^\d+$/.test(String(candidate || '')));
-  return value ? Number(value) : 0;
+  const directCandidates = [
+    data?.assetId, data?.asset_id, data?.asset,
+    data?.response?.assetId, data?.response?.asset_id, data?.response?.asset,
+    data?.result?.assetId, data?.result?.asset_id, data?.result?.asset,
+    data?.operation?.assetId, data?.operation?.asset,
+    data?.response?.result?.assetId, data?.response?.result?.asset_id, data?.response?.result?.asset
+  ];
+  const directValue = directCandidates.map(extractAssetIdFromValue).find(Boolean);
+  if (directValue) return directValue;
+  const search = (value, path = '', depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 8) return 0;
+    for (const [key, nested] of Object.entries(value)) {
+      const normalizedKey = key.toLowerCase().replace(/[-_]/g, '');
+      const nestedPath = `${path}.${key}`.toLowerCase();
+      if (['assetid', 'assetidentifier', 'asset'].includes(normalizedKey)) {
+        const assetId = extractAssetIdFromValue(nested);
+        if (assetId) return assetId;
+      }
+      if (key.toLowerCase() === 'id' && /(response|result|asset)/.test(nestedPath)) {
+        const assetId = extractAssetIdFromValue(nested);
+        if (assetId) return assetId;
+      }
+      if (key.toLowerCase() === 'path') {
+        const assetId = extractAssetIdFromValue(nested);
+        if (assetId) return assetId;
+      }
+      const found = search(nested, nestedPath, depth + 1);
+      if (found) return found;
+    }
+    return 0;
+  };
+  return search(data);
+}
+function summarizeRobloxResponse(data) {
+  if (!data || typeof data !== 'object') return { type: typeof data };
+  const summary = { keys: Object.keys(data).slice(0, 30) };
+  if (data.status !== undefined) summary.status = String(data.status);
+  if (data.state !== undefined) summary.state = String(data.state);
+  if (data.done !== undefined) summary.done = Boolean(data.done);
+  return summary;
 }
 function robloxOperationError(data, fallback = 'Roblox moderation failed.') {
   return data?.error?.message || data?.error?.details || data?.message || data?.detail || data?.result?.error?.message || data?.response?.error?.message || fallback;
 }
 async function pollRobloxOperation(apiKey, operationId) {
-  const maxAttempts = 20;
+  const maxAttempts = Math.max(1, Number(process.env.ROBLOX_OPERATION_MAX_ATTEMPTS || 60));
+  const pollIntervalMs = Math.max(500, Number(process.env.ROBLOX_OPERATION_POLL_INTERVAL_MS || 2000));
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const response = await fetchRobloxWithBackoff(`https://apis.roblox.com/assets/v1/operations/${encodeURIComponent(operationId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
-    const data = await response.json().catch(() => ({}));
+    const { rawBody, data } = await readRobloxResponse(response);
+    if (!response.ok) logRobloxResponse('operation request failed', response, rawBody, data);
     if (response.status === 401) throw new Error('AUTHENTICATION_INVALID');
     if (response.status === 403) throw new Error('PERMISSION_OR_RESOURCE_DENIED');
     if (response.status === 429) throw new Error('Upload limit reached.');
     if (response.status >= 500) throw new Error('Roblox API unavailable.');
-    if (!response.ok) throw new Error(robloxOperationError(data));
-    const state = String(data.status || data.state || '').toLowerCase();
+    if (!response.ok) {
+      throw new Error(robloxOperationError(data));
+    }
+    console.info('[Roblox operation] poll', { status: response.status, operation: `${operationId.slice(0, 8)}...`, attempt: attempt + 1, response: summarizeRobloxResponse(data) });
+    const state = String(data.status || data.state || data.metadata?.status || '').toLowerCase();
+    if (data.error || data.response?.error || data.result?.error) throw new Error(robloxOperationError(data));
     if (data.done === true || ['completed', 'complete', 'succeeded', 'success'].includes(state)) return data;
     if (['failed', 'cancelled', 'canceled'].includes(state)) throw new Error(robloxOperationError(data));
-    await sleep(1500);
+    await sleep(pollIntervalMs);
   }
   throw new Error('Roblox is still processing this upload. Please try again in a moment.');
 }
@@ -405,7 +627,7 @@ function runFfmpeg(input, output, args) {
 }
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
 
-app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: robloxKeySecretReady, ffmpeg: ffmpegCommand }));
+app.get('/api/health', (req, res) => res.json({ ok: true, robloxConfigured: robloxKeySecretReady, ffmpegConfigured: Boolean(ffmpegCommand) }));
 app.get('/api/usage', async (req, res) => {
   try {
     if (!requestEmail(req)) return res.status(401).json({ error: 'Login diperlukan.' });
@@ -656,15 +878,15 @@ app.post('/api/payments/:id/status', async (req, res) => {
 app.get('/api/chats/:orderId', (req, res) => {
   const order = paymentOrders.find((item) => item.id === req.params.orderId || item.orderNumber === req.params.orderId);
   if (!canAccessPayment(req, order)) return res.status(403).json({ error: 'Anda tidak memiliki akses ke chat order ini.' });
-  const room = chatRooms.find((item) => item.orderId === req.params.orderId);
-  if (!room) return res.json({ orderId: req.params.orderId, messages: [] });
+  const room = chatRooms.find((item) => item.orderId === order.id);
+  if (!room) return res.json({ orderId: order.id, messages: [] });
   res.json(room);
 });
 app.post('/api/chats/:orderId', async (req, res) => {
   const order = paymentOrders.find((item) => item.id === req.params.orderId || item.orderNumber === req.params.orderId);
   if (!canAccessPayment(req, order)) return res.status(403).json({ error: 'Anda tidak memiliki akses ke chat order ini.' });
-  const room = chatRooms.find((item) => item.orderId === req.params.orderId);
-  const sender = String(req.body.sender || 'Customer').trim() || 'Customer';
+  const room = chatRooms.find((item) => item.orderId === order.id);
+  const sender = isPaymentAdmin(req) ? 'Seller' : 'Customer';
   const text = String(req.body.text || '').trim();
   if (!room || !text) return res.status(400).json({ error: 'Chat tidak valid.' });
   room.messages.push({ sender, text, sentAt: new Date().toISOString() });
@@ -722,7 +944,7 @@ app.get('/auth/google/callback', async (req, res) => {
     if (!tokenResponse.ok) throw new Error(tokens.error_description || 'Google token exchange gagal.');
     const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
     const profile = await profileResponse.json();
-    if (!profileResponse.ok || !profile.sub) throw new Error('Profil Google tidak dapat diverifikasi.');
+    if (!profileResponse.ok || !profile.sub || profile.email_verified !== true) throw new Error('Profil Google tidak dapat diverifikasi.');
     req.session.googleUser = { id: profile.sub, name: profile.name || profile.email, email: profile.email, avatar: profile.picture || '' };
     await new Promise((resolve, reject) => req.session.save((error) => error ? reject(error) : resolve()));
     res.redirect(`${publicBaseUrl}/`);
@@ -735,6 +957,58 @@ app.post('/api/youtube/validate', (req, res) => {
   try { parsed = new URL(value); } catch { return res.status(400).json({ error: 'Masukkan URL YouTube yang valid.' }); }
   if (!['youtube.com', 'www.youtube.com', 'youtu.be', 'www.youtube-nocookie.com'].includes(parsed.hostname)) return res.status(400).json({ error: 'URL harus berasal dari YouTube.' });
   res.json({ valid: true, message: 'URL dikenali. Untuk menjaga hak cipta, aplikasi tidak mengunduh konten YouTube; unggah file audio yang kamu miliki haknya.' });
+});
+app.post('/api/source/detect', async (req, res) => {
+  const rawUrl = String(req.body?.url || '').trim();
+  let parsedUrl;
+  try { parsedUrl = new URL(rawUrl); } catch { return res.status(400).json({ ok: false, error: 'Masukkan URL yang valid.' }); }
+  const platform = detectSourcePlatform(parsedUrl);
+  if (!platform) {
+    try { return res.json({ ok: true, ...(await probeDirectMediaSource(parsedUrl.toString())) }); } catch (error) { return res.status(400).json({ ok: false, error: error.message || 'URL bukan platform atau direct media yang didukung.' }); }
+  }
+  try {
+    const encodedUrl = encodeURIComponent(parsedUrl.toString());
+    if (platform === 'appleMusic') {
+      const payload = await fetchSourceJson(`https://itunes.apple.com/lookup?url=${encodedUrl}`);
+      const item = Array.isArray(payload.results) ? payload.results[0] : null;
+      if (!item) return res.status(404).json({ ok: false, error: 'Apple Music tidak mengembalikan metadata untuk URL ini.' });
+      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), item) });
+    }
+    const oembedHost = platform === 'youtube' ? 'www.youtube.com/oembed' : platform === 'soundcloud' ? 'soundcloud.com/oembed' : platform === 'tiktok' ? 'www.tiktok.com/oembed' : 'open.spotify.com/oembed';
+    const payload = await fetchSourceJson(`https://${oembedHost}?url=${encodedUrl}&format=json`);
+    res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), payload) });
+  } catch (error) {
+    const reason = error.name === 'AbortError' ? 'Metadata provider timeout.' : error.message;
+    console.warn('[Source detect] provider failed', { platform, status: reason });
+    res.status(502).json({ ok: false, platform, error: `Metadata ${platform} tidak dapat diakses: ${reason}` });
+  }
+});
+app.post('/api/source/download', async (req, res) => {
+  const sourceUrl = String(req.body?.url || '').trim();
+  const format = String(req.body?.format || 'mp3').toLowerCase();
+  const speed = Number.parseFloat(String(req.body?.speed ?? '1').trim());
+  if (!['mp3', 'wav', 'ogg', 'flac'].includes(format)) return res.status(400).json({ ok: false, error: 'Format output tidak didukung.' });
+  if (!Number.isFinite(speed) || speed < 0.5 || speed > 4) return res.status(400).json({ ok: false, error: 'Play Speed harus antara 0.50 dan 4.00.' });
+  let source;
+  const id = crypto.randomUUID();
+  const outputName = `${id}.${format}`;
+  const output = path.join(outputDir, outputName);
+  try {
+    source = await downloadRemoteSource(sourceUrl);
+    const audioFilters = speed === 1 ? [] : [speed <= 2 ? `atempo=${speed}` : 'atempo=2', ...(speed > 2 ? [`atempo=${(speed / 2).toFixed(3)}`] : [])];
+    const codecArgs = format === 'wav' ? ['-c:a', 'pcm_s16le'] : format === 'flac' ? ['-c:a', 'flac'] : format === 'ogg' ? ['-c:a', 'libvorbis', '-q:a', '6'] : ['-c:a', 'libmp3lame', '-b:a', '192k'];
+    const args = [...(audioFilters.length ? ['-filter:a', audioFilters.join(',')] : []), ...codecArgs];
+    await runFfmpeg(source.path, output, args);
+    const stat = fs.statSync(output);
+    outputOwners.set(outputName, requestEmail(req));
+    await saveOutputOwner(outputName, requestEmail(req));
+    setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
+    res.json({ ok: true, id, name: `${source.originalName.replace(/\.[^.]+$/, '') || 'remote-audio'}${speed === 1 ? '' : `-speed-${speed.toFixed(2)}`}.${format}`, format, speed, size: stat.size, downloadUrl: `/api/download/${outputName}`, sourceUrl });
+  } catch (error) {
+    cleanup(source?.path, output);
+    console.warn('[Source download] failed', { message: error.message });
+    res.status(502).json({ ok: false, error: error.message || 'Sumber audio tidak dapat diproses.' });
+  }
 });
 
 app.post('/api/convert', upload.single('audio'), async (req, res) => {
@@ -750,6 +1024,8 @@ app.post('/api/convert', upload.single('audio'), async (req, res) => {
     cleanup(req.file.path);
     const stat = fs.statSync(output);
     outputOwners.set(`${id}.${format}`, requestEmail(req));
+    await saveOutputOwner(`${id}.${format}`, requestEmail(req));
+    setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
     res.json({ id, name: `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}.${format}`, format, size: stat.size, downloadUrl: `/api/download/${id}.${format}` });
   } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
 });
@@ -762,6 +1038,7 @@ app.post('/api/optimize', upload.single('audio'), async (req, res) => {
     cleanup(req.file.path);
     const stat = fs.statSync(output);
     outputOwners.set(`${id}.mp3`, requestEmail(req));
+    await saveOutputOwner(`${id}.mp3`, requestEmail(req));
     const name = `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}-optimized.mp3`;
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
     res.json({ id, name, size: stat.size, downloadUrl: `/api/download/${id}.mp3` });
@@ -803,6 +1080,7 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
     cleanup(req.file.path);
     const stat = fs.statSync(output);
     outputOwners.set(outputName, requestEmail(req));
+    await saveOutputOwner(outputName, requestEmail(req));
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
     const fileName = `${originalName}-remix-${normalizedSpeed.toFixed(2)}.${format}`;
     const metadata = { originalSpeed: 1, remixSpeed: normalizedSpeed, robloxPlaybackSpeed: normalPlaybackSpeed, originalFilename: req.file.originalname, remixFilename: fileName, format, audioIsOriginal: false, playbackValidation: normalizedSpeed * normalPlaybackSpeed };
@@ -813,13 +1091,14 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-app.get('/api/download/:file', (req, res) => {
+app.get('/api/download/:file', async (req, res) => {
   const file = path.basename(req.params.file);
   const fullPath = path.join(outputDir, file);
   const owner = outputOwners.get(file);
   const email = requestEmail(req);
   if (!email) return res.status(401).json({ error: 'Login diperlukan.' });
-  if (!owner || (owner !== email && !isPaymentAdmin(req))) return res.status(403).json({ error: 'Anda tidak memiliki akses ke hasil ini.' });
+  const persistedOwner = owner || (await databaseAll('SELECT owner_email FROM converted_files WHERE file_name = ?', [file]))[0]?.owner_email;
+  if (!persistedOwner || (persistedOwner !== email && !isPaymentAdmin(req))) return res.status(403).json({ error: 'Anda tidak memiliki akses ke hasil ini.' });
   if (!fs.existsSync(fullPath)) return res.status(404).json({ error: 'Hasil tidak ditemukan.' });
   res.download(fullPath, file);
 });
@@ -831,7 +1110,8 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   if (!req.file) return res.status(400).json({ success: false, error: 'File harus berupa audio.' });
-  if (!String(req.file.mimetype || '').startsWith('audio/')) {
+  const contentType = audioContentType(req.file);
+  if (!contentType) {
     cleanup(req.file.path);
     return res.status(400).json({ success: false, error: 'File upload Roblox harus berupa audio.' });
   }
@@ -855,22 +1135,24 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
   let operationId = null;
   try {
     const form = new FormData();
-    form.append('request', JSON.stringify({
+    // Roblox Assets API expects the metadata part as application/json and returns a long-running operation.
+    form.append('request', new Blob([JSON.stringify({
       assetType: 'Audio',
       displayName: safeDisplayName,
       description: String(req.body.description || process.env.ROBLOX_ASSET_DESCRIPTION || 'Uploaded from Rival Audio Converter').slice(0, 1000),
       creationContext: { creator: { [`${creatorType}Id`]: creatorId } }
-    }));
-    form.append('fileContent', new Blob([fs.readFileSync(req.file.path)], { type: req.file.mimetype || 'audio/mpeg' }), req.file.originalname);
+    })], { type: 'application/json' }), 'request.json');
+    form.append('fileContent', new Blob([fs.readFileSync(req.file.path)], { type: contentType }), req.file.originalname);
     const uploadResponse = await fetchRobloxWithBackoff('https://apis.roblox.com/assets/v1/assets', {
       method: 'POST',
       headers: { 'x-api-key': apiKey },
       body: form
     });
-    const uploadData = await uploadResponse.json().catch(() => ({}));
+    const { rawBody: uploadBody, data: uploadData } = await readRobloxResponse(uploadResponse);
     cleanup(req.file.path);
     if (!uploadResponse.ok) {
       const message = uploadData?.message || uploadData?.error || 'Roblox menolak upload.';
+      logRobloxResponse('upload failed', uploadResponse, uploadBody, uploadData);
       if (uploadResponse.status === 401) return res.status(401).json({ success: false, code: 'AUTHENTICATION_INVALID', error: 'Roblox menolak API key. Pastikan key masih aktif dan dikirim dari server.' });
       if (uploadResponse.status === 403) return res.status(403).json({ success: false, code: 'PERMISSION_OR_RESOURCE_DENIED', error: `Roblox menolak akses. Periksa permission Assets: Write, resource API key, dan ${creatorType === 'group' ? 'Group ID' : 'User ID'} yang dipilih. Detail Roblox: ${message}` });
       if (uploadResponse.status === 404) return res.status(404).json({ success: false, code: 'ENDPOINT_OR_RESOURCE_NOT_FOUND', error: 'Endpoint atau resource Roblox tidak ditemukan. Periksa resource API key dan creator ID.' });
@@ -878,13 +1160,27 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
       if (uploadResponse.status >= 500) return res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
       return res.status(uploadResponse.status).json({ success: false, error: message });
     }
-    operationId = uploadData?.operationId || uploadData?.id || uploadData?.operation?.id || (typeof uploadData?.path === 'string' ? uploadData.path.split('/').pop() : '');
-    if (!operationId) return res.status(202).json({ success: false, pending: true, error: 'Roblox menerima upload, tetapi operation ID belum tersedia.' });
+    logRobloxResponse('upload accepted', uploadResponse, uploadBody, uploadData);
+    operationId = String(uploadData?.operationId || uploadData?.operation?.id || uploadData?.path || uploadData?.operation?.path || '').trim().replace(/^operations\//, '');
+    if (!operationId) {
+      const immediateAssetId = extractRobloxAssetId(uploadData);
+      if (immediateAssetId) {
+        history.unshift({ id: immediateAssetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
+        await saveRobloxAsset(requestEmail(req), immediateAssetId, req.file.originalname, remixMetadata);
+        return res.json({ success: true, assetId: immediateAssetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
+      }
+      console.warn('[Roblox upload] accepted response missing operation ID', { status: uploadResponse.status, response: summarizeRobloxResponse(uploadData) });
+      return res.status(502).json({ success: false, error: 'Roblox menerima response tanpa operation ID. Upload belum dapat diverifikasi.' });
+    }
     robloxOperations.set(operationId, { ownerEmail: requestEmail(req), originalName: req.file.originalname, remixMetadata });
     const operationResult = await pollRobloxOperation(apiKey, operationId);
     const assetId = extractRobloxAssetId(operationResult);
-    if (!assetId) return res.status(400).json({ success: false, error: 'Roblox selesai memproses tetapi Asset ID tidak ditemukan.', operationId });
+    if (!assetId) {
+      console.warn('[Roblox upload] completed operation without asset ID', { operation: `${operationId.slice(0, 8)}...`, response: summarizeRobloxResponse(operationResult) });
+      return res.status(202).json({ success: false, pending: true, operationId, error: 'Roblox selesai memproses, tetapi response belum memuat Asset ID. Operation tetap dapat dipolling.' });
+    }
     history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
+    await saveRobloxAsset(requestEmail(req), assetId, req.file.originalname, remixMetadata);
     robloxOperations.delete(operationId);
     res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
   } catch (error) {
@@ -893,7 +1189,7 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     if (message.includes('AUTHENTICATION_INVALID')) return res.status(401).json({ success: false, code: 'AUTHENTICATION_INVALID', error: 'Roblox menolak API key. Pastikan key masih aktif dan dikirim dari server.' });
     if (message.includes('PERMISSION_OR_RESOURCE_DENIED')) return res.status(403).json({ success: false, code: 'PERMISSION_OR_RESOURCE_DENIED', error: `Roblox menolak permission atau resource. Periksa Assets: Write, resource API key, dan ${creatorType === 'group' ? 'Group ID' : 'User ID'}.` });
     if (message.includes('Upload limit reached')) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
-    if (message.includes('Roblox moderation failed')) return res.status(400).json({ success: false, error: 'Roblox moderation failed.' });
+    if (message.includes('Roblox moderation failed')) return res.status(400).json({ success: false, error: message, operationId });
     if (message.includes('still processing')) return res.status(202).json({ success: false, pending: true, operationId, error: 'Roblox is still processing this upload.' });
     res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
   }
@@ -909,8 +1205,11 @@ app.get('/api/roblox/operations/:id', async (req, res) => {
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   try {
     const response = await fetchRobloxWithBackoff(`https://apis.roblox.com/assets/v1/operations/${encodeURIComponent(operationId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) return res.status(response.status).json({ success: false, error: data?.message || data?.error || 'Roblox operation gagal.' });
+    const { rawBody, data } = await readRobloxResponse(response);
+    if (!response.ok) {
+      logRobloxResponse('operation status failed', response, rawBody, data);
+      return res.status(response.status).json({ success: false, error: robloxOperationError(data, 'Roblox operation gagal.') });
+    }
     const state = String(data.status || data.state || '').toLowerCase();
     if (['failed', 'cancelled', 'canceled'].includes(state)) {
       robloxOperations.delete(operationId);
@@ -920,6 +1219,7 @@ app.get('/api/roblox/operations/:id', async (req, res) => {
     const assetId = extractRobloxAssetId(data);
     if (!assetId) return res.status(202).json({ success: false, pending: true, operationId });
     history.unshift({ id: assetId, name: operation.originalName, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata: operation.remixMetadata });
+    await saveRobloxAsset(requestEmail(req), assetId, operation.originalName, operation.remixMetadata);
     robloxOperations.delete(operationId);
     return res.json({ success: true, assetId, remixMetadata: operation.remixMetadata });
   } catch (error) {
@@ -932,7 +1232,11 @@ app.get('/api/roblox/assets/:id', async (req, res) => {
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ error: 'Connect Roblox API terlebih dahulu.' });
-  const response = await fetch(`https://apis.roblox.com/assets/v1/assets/${encodeURIComponent(req.params.id)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
+  const assetId = String(req.params.id || '').trim();
+  if (!/^\d+$/.test(assetId) || !history.some((item) => item.ownerEmail === requestEmail(req) && String(item.id) === assetId)) {
+    return res.status(404).json({ error: 'Asset tidak ditemukan pada akun ini.' });
+  }
+  const response = await fetch(`https://apis.roblox.com/assets/v1/assets/${encodeURIComponent(assetId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, Accept: 'application/json' } });
   const payload = await response.json().catch(() => ({}));
   res.status(response.status).json(payload);
 });

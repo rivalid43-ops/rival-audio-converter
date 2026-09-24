@@ -3,4 +3,4 @@ aptPkgs = ["ffmpeg"]
 nixPkgs = ["ffmpeg"]
 
 [phases.build]
-cmds = ["ffmpeg -version"]
+cmds = ["ffmpeg -version", "npm run build"]

@@ -67,7 +67,11 @@ Roblox tidak menyediakan endpoint umum untuk membaca daftar permission write API
 
 ## YouTube
 
-URL YouTube hanya divalidasi dan tidak diunduh oleh aplikasi. Pengguna harus mengunggah file audio yang memang mereka miliki hak untuk digunakan, sehingga aplikasi tidak membypass pembatasan atau DRM.
+Route `POST /api/source/detect` dapat mengambil metadata nyata dari YouTube, SoundCloud, TikTok, Spotify, dan Apple Music melalui provider metadata resmi/oEmbed. Metadata yang tersedia bergantung pada provider dan dapat meliputi judul, creator/artist, thumbnail, dan durasi.
+
+Aplikasi ini tidak mengunduh atau mengekstrak audio dari URL platform tersebut. Endpoint detection mengembalikan `audio.available: false` sampai integrasi audio resmi dikonfigurasi. Audio yang akan diproses harus diunggah sebagai file yang memang dimiliki atau dilisensikan pengguna; aplikasi tidak membypass DRM atau pembatasan platform.
+
+Menu **Download via URL** menggunakan `POST /api/source/download` untuk URL file media langsung. Backend mengunduh sumber dengan batas 100 MB dan timeout 30 detik, memprosesnya dengan FFmpeg sesuai `format` dan `speed`, lalu mengembalikan `downloadUrl` hasil nyata. URL halaman platform/HTML ditolak dan tidak dianggap sebagai audio.
 
 ## Pemeriksaan
 
