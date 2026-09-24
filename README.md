@@ -71,6 +71,14 @@ Route `POST /api/source/detect` dapat mengambil metadata nyata dari YouTube, Sou
 
 Aplikasi ini tidak mengunduh atau mengekstrak audio dari URL platform tersebut. Endpoint detection mengembalikan `audio.available: false` sampai integrasi audio resmi dikonfigurasi. Audio yang akan diproses harus diunggah sebagai file yang memang dimiliki atau dilisensikan pengguna; aplikasi tidak membypass DRM atau pembatasan platform.
 
+Provider resmi opsional: `YOUTUBE_API_KEY` memakai YouTube Data API untuk metadata; `SPOTIFY_CLIENT_ID` dan `SPOTIFY_CLIENT_SECRET` memakai Spotify Client Credentials untuk metadata; `APPLE_MUSIC_DEVELOPER_TOKEN` dan `APPLE_MUSIC_STOREFRONT` memakai Apple Music API; `SOUNDCLOUD_ACCESS_TOKEN` memakai SoundCloud Resolve API. Spotify/Apple Music tidak menyediakan file audio download melalui API resmi. SoundCloud hanya dapat menyediakan stream untuk track yang playable dan tetap tunduk pada attribution/terms, sehingga aplikasi tidak mengubahnya menjadi file download.
+
+## Evaluasi Provider Pihak Ketiga
+
+Tidak ada provider pihak ketiga yang dipasang untuk mengekstrak audio dari URL YouTube, Spotify, Apple Music, SoundCloud, atau TikTok. YouTube API Terms membatasi reproduksi/distribusi audiovisual di luar API; Spotify melarang download dan membatasi preview/metadata sebagai standalone service; Apple Music API menyediakan katalog dan resource metadata; TikTok Display API menyediakan metadata/embed; SoundCloud menyediakan stream untuk track playable dengan attribution, bukan jaminan file download.
+
+Marketplace seperti Apify/RapidAPI berisi actor/API pihak ketiga dengan lisensi, harga, dan kepatuhan platform yang berbeda-beda. Listing downloader/scraper bukan bukti bahwa penggunaan komersial atau redistribusi audio diizinkan, sehingga tidak dipasang tanpa kontrak provider dan legal review yang spesifik. Cloudinary dapat menerima dan mentransformasi asset dari URL publik, tetapi bukan provider ekstraksi audio platform; aplikasi hanya menggunakan pipeline FFmpeg untuk file yang telah diperoleh secara sah.
+
 Menu **Download via URL** menggunakan `POST /api/source/download` untuk URL file media langsung. Backend mengunduh sumber dengan batas 100 MB dan timeout 30 detik, memprosesnya dengan FFmpeg sesuai `format` dan `speed`, lalu mengembalikan `downloadUrl` hasil nyata. URL halaman platform/HTML ditolak dan tidak dianggap sebagai audio.
 
 ## Pemeriksaan

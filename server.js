@@ -94,6 +94,28 @@ function calculateNormalPlaybackSpeed(remixSpeed) {
   if (!Number.isFinite(value) || value <= 0) return null;
   return 1 / value;
 }
+function parseAudioSpeed(value, fallback = 1) {
+  const speed = Number.parseFloat(String(value ?? fallback).trim());
+  return Number.isFinite(speed) && speed >= 0.5 && speed <= 4 ? speed : null;
+}
+function parseRobloxSpeed(value, fallback = 1) {
+  const speed = Number.parseFloat(String(value ?? fallback).trim());
+  return Number.isFinite(speed) && speed > 0 && speed <= 16 ? speed : null;
+}
+function tempoFilterArgs(speed) {
+  if (speed === 1) return [];
+  return ['-filter:a', speed <= 2 ? `atempo=${speed}` : `atempo=2,atempo=${(speed / 2).toFixed(3)}`];
+}
+function audioFilterArgs(speed, filters = []) {
+  const tempo = speed === 1 ? [] : [speed <= 2 ? `atempo=${speed}` : 'atempo=2', ...(speed > 2 ? [`atempo=${(speed / 2).toFixed(3)}`] : [])];
+  const chain = [...tempo, ...filters];
+  return chain.length ? ['-filter:a', chain.join(',')] : [];
+}
+function assertOutputFile(filePath) {
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile() || stat.size <= 0) throw new Error('Audio output is empty.');
+  return stat;
+}
 async function initializePaymentDatabase() {
   await databaseRun('PRAGMA journal_mode = WAL');
   await databaseRun(`CREATE TABLE IF NOT EXISTS payment_orders (
@@ -313,6 +335,22 @@ const imageUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => cb(null, /^image\/(png|jpe?g|webp)$/.test(file.mimetype))
 });
+const robloxUpload = multer({
+  dest: uploadDir,
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => validRobloxAudioFile(file) ? cb(null, true) : cb(new Error('UNSUPPORTED_AUDIO_FORMAT'))
+});
+function robloxUploadMiddleware(req, res, next) {
+  const contentLength = Number(req.get('content-length') || 0);
+  if (contentLength === 0 && !req.headers['transfer-encoding']) return res.status(400).json({ success: false, error: 'Request body is empty' });
+  robloxUpload.single('audio')(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'File is too large' });
+    if (error.code === 'LIMIT_UNEXPECTED_FILE' || error.message === 'UNSUPPORTED_AUDIO_FORMAT') return res.status(415).json({ success: false, error: 'Unsupported audio format' });
+    if (error instanceof multer.MulterError) return res.status(400).json({ success: false, error: 'Invalid multipart/form-data request' });
+    return res.status(415).json({ success: false, error: 'Unsupported audio format' });
+  });
+}
 async function getPaymentSettings() {
   await paymentDatabaseReady;
   const rows = await databaseAll('SELECT payment_target, qr_image, updated_at FROM payment_settings WHERE id = 1');
@@ -332,11 +370,11 @@ function detectSourcePlatform(parsedUrl) {
   const hostname = parsedUrl.hostname.toLowerCase();
   return Object.entries(sourcePlatformHosts).find(([, hosts]) => hosts.has(hostname))?.[0] || null;
 }
-async function fetchSourceJson(url, timeoutMs = 8000) {
+async function fetchSourceJson(url, timeoutMs = 8000, headers = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+    const response = await fetch(url, { headers: { Accept: 'application/json', ...headers }, signal: controller.signal });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(`Metadata provider returned HTTP ${response.status}.`);
     return data;
@@ -344,7 +382,7 @@ async function fetchSourceJson(url, timeoutMs = 8000) {
     clearTimeout(timer);
   }
 }
-function sourceMetadataPayload(platform, sourceUrl, data) {
+function sourceMetadataPayload(platform, sourceUrl, data, options = {}) {
   return {
     platform,
     url: sourceUrl,
@@ -354,24 +392,62 @@ function sourceMetadataPayload(platform, sourceUrl, data) {
       durationSeconds: Number.isFinite(Number(data.trackTimeMillis)) ? Math.round(Number(data.trackTimeMillis) / 1000) : null,
       creator: String(data.author_name || data.artistName || '').trim() || null
     },
-    audio: { available: false, status: 'NOT_CONNECTED', reason: 'Metadata is available, but this server has no official audio source/download integration.' }
+    provider: options.provider || 'metadata-provider',
+    audio: options.audio || { available: false, status: 'METADATA_ONLY', reason: 'Metadata is available, but this platform does not provide an authorized audio file download through this integration.' }
   };
+}
+function youtubeVideoId(parsedUrl) { return parsedUrl.hostname === 'youtu.be' ? parsedUrl.pathname.slice(1).split('/')[0] : parsedUrl.searchParams.get('v'); }
+function spotifyTrackId(parsedUrl) { const match = parsedUrl.pathname.match(/^\/track\/([A-Za-z0-9]+)$/); return match?.[1] || null; }
+function appleMusicSongId(parsedUrl) { const match = parsedUrl.pathname.match(/\/song\/[^/]+\/(\d+)/); return match?.[1] || null; }
+function assertPublicSourceUrl(sourceUrl) {
+  const parsedUrl = sourceUrl instanceof URL ? sourceUrl : new URL(sourceUrl);
+  if (!['http:', 'https:'].includes(parsedUrl.protocol) || isBlockedRemoteHost(parsedUrl.hostname)) throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.');
+  return parsedUrl;
+}
+function isSupportedMediaType(contentType, sourceUrl) {
+  if (contentType.startsWith('audio/') || contentType.startsWith('video/')) return true;
+  const extension = path.extname(new URL(sourceUrl).pathname).toLowerCase();
+  return ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.mp4', '.webm', '.mov', '.mkv'].includes(extension);
+}
+async function fetchPublicSource(sourceUrl, options = {}) {
+  let currentUrl = assertPublicSourceUrl(sourceUrl);
+  for (let redirect = 0; redirect <= 3; redirect += 1) {
+    const response = await fetch(currentUrl, { ...options, redirect: 'manual' });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return { response, url: currentUrl };
+    const location = response.headers.get('location');
+    if (!location || redirect === 3) throw new Error('Sumber memiliki terlalu banyak redirect atau redirect tidak valid.');
+    currentUrl = assertPublicSourceUrl(new URL(location, currentUrl));
+  }
+  throw new Error('Sumber memiliki terlalu banyak redirect.');
+}
+let spotifyToken = null;
+async function getSpotifyToken() {
+  const clientId = String(process.env.SPOTIFY_CLIENT_ID || '').trim();
+  const clientSecret = String(process.env.SPOTIFY_CLIENT_SECRET || '').trim();
+  if (!clientId || !clientSecret) return null;
+  if (spotifyToken && spotifyToken.expiresAt > Date.now()) return spotifyToken.value;
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+  const body = new URLSearchParams({ grant_type: 'client_credentials' });
+  const response = await fetch('https://accounts.spotify.com/api/token', { method: 'POST', headers: { Authorization: `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) throw new Error(`Spotify token request failed with HTTP ${response.status}.`);
+  spotifyToken = { value: data.access_token, expiresAt: Date.now() + Math.max(60, Number(data.expires_in || 3600) - 60) * 1000 };
+  return spotifyToken.value;
 }
 async function probeDirectMediaSource(sourceUrl) {
   let parsedUrl;
-  try { parsedUrl = new URL(sourceUrl); } catch { throw new Error('URL sumber tidak valid.'); }
-  if (!['http:', 'https:'].includes(parsedUrl.protocol) || isBlockedRemoteHost(parsedUrl.hostname)) throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.');
+  try { parsedUrl = assertPublicSourceUrl(sourceUrl); } catch { throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.'); }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(parsedUrl, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+    const { response, url: finalUrl } = await fetchPublicSource(parsedUrl, { method: 'HEAD', signal: controller.signal });
     if (!response.ok) throw new Error(`Sumber mengembalikan HTTP ${response.status}.`);
     const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
-    if (!contentType.startsWith('audio/') && !contentType.startsWith('video/')) throw new Error('URL tidak mengembalikan file audio/video langsung.');
+    if (!isSupportedMediaType(contentType, finalUrl)) throw new Error('URL tidak mengembalikan file audio/video langsung.');
     const contentLength = Number(response.headers.get('content-length') || 0);
     if (contentLength > 100 * 1024 * 1024) throw new Error('Ukuran sumber melebihi batas 100 MB.');
-    const name = decodeURIComponent(path.basename(parsedUrl.pathname)) || 'remote-audio';
-    return { platform: 'direct-media', url: parsedUrl.toString(), metadata: { title: name, thumbnail: null, durationSeconds: null, creator: null }, audio: { available: true, status: 'AVAILABLE', contentType, reason: 'Direct media source is available for server-side processing.' } };
+    const name = decodeURIComponent(path.basename(finalUrl.pathname)) || 'remote-audio';
+    return { platform: 'direct-media', url: finalUrl.toString(), metadata: { title: name, thumbnail: null, durationSeconds: null, creator: null }, audio: { available: true, status: 'AVAILABLE', contentType, reason: 'Direct media source is available for server-side processing.' } };
   } finally {
     clearTimeout(timer);
   }
@@ -382,23 +458,22 @@ function isBlockedRemoteHost(hostname) {
 }
 async function downloadRemoteSource(sourceUrl) {
   let parsedUrl;
-  try { parsedUrl = new URL(sourceUrl); } catch { throw new Error('URL sumber tidak valid.'); }
-  if (!['http:', 'https:'].includes(parsedUrl.protocol) || isBlockedRemoteHost(parsedUrl.hostname)) throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.');
+  try { parsedUrl = assertPublicSourceUrl(sourceUrl); } catch { throw new Error('URL sumber harus berupa alamat HTTP/HTTPS publik.'); }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   const sourcePath = path.join(uploadDir, `${crypto.randomUUID()}.remote`);
   try {
-    const response = await fetch(parsedUrl, { redirect: 'follow', signal: controller.signal });
+    const { response, url: finalUrl } = await fetchPublicSource(parsedUrl, { signal: controller.signal });
     if (!response.ok) throw new Error(`Sumber mengembalikan HTTP ${response.status}.`);
     const contentType = String(response.headers.get('content-type') || '').split(';')[0].toLowerCase();
     const contentLength = Number(response.headers.get('content-length') || 0);
     if (contentLength > 100 * 1024 * 1024) throw new Error('Ukuran sumber melebihi batas 100 MB.');
-    if (contentType.startsWith('text/html') || contentType === 'application/json') throw new Error('URL tidak mengembalikan file media langsung. Gunakan URL audio/video langsung.');
+    if (!isSupportedMediaType(contentType, finalUrl)) throw new Error('URL tidak mengembalikan file media langsung. Gunakan URL audio/video langsung.');
     if (!response.body) throw new Error('Sumber tidak mengembalikan isi file.');
     await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(sourcePath));
     const stat = fs.statSync(sourcePath);
     if (!stat.size || stat.size > 100 * 1024 * 1024) throw new Error('File sumber kosong atau melebihi batas 100 MB.');
-    return { path: sourcePath, originalName: safeName(path.basename(parsedUrl.pathname)) || 'remote-audio', contentType };
+    return { path: sourcePath, originalName: safeName(path.basename(finalUrl.pathname)) || 'remote-audio', contentType };
   } catch (error) {
     cleanup(sourcePath);
     if (error.name === 'AbortError') throw new Error('Download sumber timeout setelah 30 detik.');
@@ -527,6 +602,11 @@ function audioContentType(file) {
   const extension = path.extname(String(file?.originalname || '')).toLowerCase();
   return ({ '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac', '.aac': 'audio/aac', '.m4a': 'audio/mp4', '.webm': 'audio/webm' })[extension] || '';
 }
+function validRobloxAudioFile(file) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  return Boolean(audioContentType(file) && mime.startsWith('audio/'));
+}
+function isValidAssetId(value) { return Number.isInteger(value) && value > 0; }
 function extractRobloxAssetId(data) {
   const directCandidates = [
     data?.assetId, data?.asset_id, data?.asset,
@@ -597,7 +677,17 @@ async function pollRobloxOperation(apiKey, operationId) {
 }
 async function fetchRobloxWithBackoff(url, options, maxAttempts = 3) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await fetch(url, options);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let response;
+    try {
+      response = await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+      if (error.name === 'AbortError') throw new Error('Roblox API timeout.');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (response.status !== 429 || attempt === maxAttempts - 1) return response;
     await sleep(500 * (2 ** attempt));
   }
@@ -623,6 +713,15 @@ function runFfmpeg(input, output, args) {
       reject(spawnError);
     });
     process.on('close', (code) => code === 0 ? resolve() : reject(new Error(error.slice(-800) || 'Konversi gagal.')));
+  });
+}
+function validateAudioFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const process = spawn(ffmpegCommand, ['-v', 'error', '-i', filePath, '-f', 'null', '-']);
+    let error = '';
+    process.stderr.on('data', (chunk) => { error += chunk.toString(); });
+    process.on('error', reject);
+    process.on('close', (code) => code === 0 ? resolve() : reject(new Error(error.slice(-600) || 'Audio file tidak dapat dibaca.')));
   });
 }
 function cleanup(...files) { files.forEach((file) => file && fs.rm(file, { force: true }, () => {})); }
@@ -968,15 +1067,44 @@ app.post('/api/source/detect', async (req, res) => {
   }
   try {
     const encodedUrl = encodeURIComponent(parsedUrl.toString());
+    if (platform === 'youtube' && process.env.YOUTUBE_API_KEY) {
+      const videoId = youtubeVideoId(parsedUrl);
+      if (!videoId) return res.status(400).json({ ok: false, error: 'YouTube video ID tidak ditemukan.' });
+      const payload = await fetchSourceJson(`https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${encodeURIComponent(videoId)}&key=${encodeURIComponent(process.env.YOUTUBE_API_KEY)}`);
+      const item = payload.items?.[0];
+      if (!item) return res.status(404).json({ ok: false, error: 'Video YouTube tidak ditemukan atau tidak dapat diakses.' });
+      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), { title: item.snippet?.title, author_name: item.snippet?.channelTitle, thumbnail_url: item.snippet?.thumbnails?.high?.url || item.snippet?.thumbnails?.default?.url }, { provider: 'youtube-data-api', audio: { available: false, status: 'METADATA_ONLY', reason: 'YouTube Data API menyediakan metadata, bukan file audio download.' } }) });
+    }
+    if (platform === 'spotify' && spotifyTrackId(parsedUrl)) {
+      const token = await getSpotifyToken();
+      if (token) {
+        const payload = await fetchSourceJson(`https://api.spotify.com/v1/tracks/${encodeURIComponent(spotifyTrackId(parsedUrl))}`, 8000, { Authorization: `Bearer ${token}` });
+        return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), { title: payload.name, artistName: payload.artists?.map((artist) => artist.name).join(', '), artworkUrl100: payload.album?.images?.[0]?.url, trackTimeMillis: payload.duration_ms }, { provider: 'spotify-web-api', audio: { available: false, status: 'METADATA_ONLY', reason: 'Spotify Web API tidak menyediakan file audio download. Preview URL juga tidak boleh digunakan sebagai standalone service.' } }) });
+      }
+    }
+    if (platform === 'appleMusic' && process.env.APPLE_MUSIC_DEVELOPER_TOKEN) {
+      const songId = appleMusicSongId(parsedUrl);
+      if (!songId) return res.status(400).json({ ok: false, error: 'Apple Music song ID tidak ditemukan.' });
+      const storefront = String(process.env.APPLE_MUSIC_STOREFRONT || 'us').trim();
+      const payload = await fetchSourceJson(`https://api.music.apple.com/v1/catalog/${encodeURIComponent(storefront)}/songs/${encodeURIComponent(songId)}`, 8000, { Authorization: `Bearer ${process.env.APPLE_MUSIC_DEVELOPER_TOKEN}` });
+      const attributes = payload.data?.[0]?.attributes;
+      if (!attributes) return res.status(404).json({ ok: false, error: 'Apple Music song tidak ditemukan.' });
+      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), { title: attributes.name, artistName: attributes.artistName, artworkUrl100: attributes.artwork?.url, trackTimeMillis: attributes.durationInMillis }, { provider: 'apple-music-api', audio: { available: false, status: 'METADATA_ONLY', reason: 'Apple Music API menyediakan katalog metadata, bukan file audio download.' } }) });
+    }
+    if (platform === 'soundcloud' && process.env.SOUNDCLOUD_ACCESS_TOKEN) {
+      const payload = await fetchSourceJson(`https://api.soundcloud.com/resolve?url=${encodedUrl}`, 8000, { Authorization: `OAuth ${process.env.SOUNDCLOUD_ACCESS_TOKEN}` });
+      const playable = payload.access === 'playable' && Boolean(payload.stream_url);
+      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), { title: payload.title, author_name: payload.user?.username, thumbnail_url: payload.artwork_url, trackTimeMillis: payload.duration }, { provider: 'soundcloud-api', audio: { available: false, status: playable ? 'OFFICIAL_STREAM_ONLY' : 'NOT_PLAYABLE', reason: playable ? 'SoundCloud exposes an authorized stream, not a downloadable source file. Use the official SoundCloud player/attribution flow.' : 'This SoundCloud track is not available for off-platform streaming.' } }) });
+    }
     if (platform === 'appleMusic') {
       const payload = await fetchSourceJson(`https://itunes.apple.com/lookup?url=${encodedUrl}`);
       const item = Array.isArray(payload.results) ? payload.results[0] : null;
       if (!item) return res.status(404).json({ ok: false, error: 'Apple Music tidak mengembalikan metadata untuk URL ini.' });
-      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), item) });
+      return res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), item, { provider: 'apple-itunes-lookup' }) });
     }
     const oembedHost = platform === 'youtube' ? 'www.youtube.com/oembed' : platform === 'soundcloud' ? 'soundcloud.com/oembed' : platform === 'tiktok' ? 'www.tiktok.com/oembed' : 'open.spotify.com/oembed';
     const payload = await fetchSourceJson(`https://${oembedHost}?url=${encodedUrl}&format=json`);
-    res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), payload) });
+    res.json({ ok: true, ...sourceMetadataPayload(platform, parsedUrl.toString(), payload, { provider: `${platform}-oembed` }) });
   } catch (error) {
     const reason = error.name === 'AbortError' ? 'Metadata provider timeout.' : error.message;
     console.warn('[Source detect] provider failed', { platform, status: reason });
@@ -987,8 +1115,10 @@ app.post('/api/source/download', async (req, res) => {
   const sourceUrl = String(req.body?.url || '').trim();
   const format = String(req.body?.format || 'mp3').toLowerCase();
   const speed = Number.parseFloat(String(req.body?.speed ?? '1').trim());
+  const robloxPlaybackSpeed = parseRobloxSpeed(req.body?.robloxPlaybackSpeed, 1);
   if (!['mp3', 'wav', 'ogg', 'flac'].includes(format)) return res.status(400).json({ ok: false, error: 'Format output tidak didukung.' });
   if (!Number.isFinite(speed) || speed < 0.5 || speed > 4) return res.status(400).json({ ok: false, error: 'Play Speed harus antara 0.50 dan 4.00.' });
+  if (robloxPlaybackSpeed === null) return res.status(400).json({ ok: false, error: 'Roblox Speed harus antara 0.01 dan 16.00.' });
   let source;
   const id = crypto.randomUUID();
   const outputName = `${id}.${format}`;
@@ -999,11 +1129,12 @@ app.post('/api/source/download', async (req, res) => {
     const codecArgs = format === 'wav' ? ['-c:a', 'pcm_s16le'] : format === 'flac' ? ['-c:a', 'flac'] : format === 'ogg' ? ['-c:a', 'libvorbis', '-q:a', '6'] : ['-c:a', 'libmp3lame', '-b:a', '192k'];
     const args = [...(audioFilters.length ? ['-filter:a', audioFilters.join(',')] : []), ...codecArgs];
     await runFfmpeg(source.path, output, args);
-    const stat = fs.statSync(output);
+    const stat = assertOutputFile(output);
+    await validateAudioFile(output);
     outputOwners.set(outputName, requestEmail(req));
     await saveOutputOwner(outputName, requestEmail(req));
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
-    res.json({ ok: true, id, name: `${source.originalName.replace(/\.[^.]+$/, '') || 'remote-audio'}${speed === 1 ? '' : `-speed-${speed.toFixed(2)}`}.${format}`, format, speed, size: stat.size, downloadUrl: `/api/download/${outputName}`, sourceUrl });
+    res.json({ ok: true, id, name: `${source.originalName.replace(/\.[^.]+$/, '') || 'remote-audio'}${speed === 1 ? '' : `-speed-${speed.toFixed(2)}`}.${format}`, format, speed, robloxPlaybackSpeed, size: stat.size, downloadUrl: `/api/download/${outputName}`, sourceUrl });
   } catch (error) {
     cleanup(source?.path, output);
     console.warn('[Source download] failed', { message: error.message });
@@ -1015,33 +1146,42 @@ app.post('/api/convert', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File musik atau video wajib dipilih.' });
   const format = String(req.body.format || 'mp3').toLowerCase();
   const quality = String(req.body.quality || '192');
+  const speed = parseAudioSpeed(req.body.speed, 1);
+  const robloxPlaybackSpeed = parseRobloxSpeed(req.body.robloxPlaybackSpeed, 1);
+  if (speed === null || robloxPlaybackSpeed === null) { cleanup(req.file.path); return res.status(400).json({ error: 'Speed audio atau Roblox Speed tidak valid.' }); }
   if (!['mp3', 'wav', 'ogg', 'flac'].includes(format)) { cleanup(req.file.path); return res.status(400).json({ error: 'Format output tidak didukung.' }); }
   const id = crypto.randomUUID();
   const output = path.join(outputDir, `${id}.${format}`);
-  const args = format === 'wav' ? ['-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le'] : format === 'flac' ? ['-ar', '48000', '-ac', '2', '-c:a', 'flac'] : format === 'ogg' ? ['-ar', '48000', '-ac', '2', '-c:a', 'libvorbis', '-q:a', quality === '320' ? '8' : quality === '128' ? '4' : '6'] : ['-ar', '48000', '-ac', '2', '-c:a', 'libmp3lame', '-b:a', `${quality}k`];
+  const codecArgs = format === 'wav' ? ['-ar', '48000', '-ac', '2', '-c:a', 'pcm_s16le'] : format === 'flac' ? ['-ar', '48000', '-ac', '2', '-c:a', 'flac'] : format === 'ogg' ? ['-ar', '48000', '-ac', '2', '-c:a', 'libvorbis', '-q:a', quality === '320' ? '8' : quality === '128' ? '4' : '6'] : ['-ar', '48000', '-ac', '2', '-c:a', 'libmp3lame', '-b:a', `${quality}k`];
+  const args = [...audioFilterArgs(speed), ...codecArgs];
   try {
     await runFfmpeg(req.file.path, output, args);
     cleanup(req.file.path);
-    const stat = fs.statSync(output);
+    const stat = assertOutputFile(output);
+    await validateAudioFile(output);
     outputOwners.set(`${id}.${format}`, requestEmail(req));
     await saveOutputOwner(`${id}.${format}`, requestEmail(req));
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
-    res.json({ id, name: `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}.${format}`, format, size: stat.size, downloadUrl: `/api/download/${id}.${format}` });
+    res.json({ id, name: `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}.${format}`, format, speed, robloxPlaybackSpeed, size: stat.size, downloadUrl: `/api/download/${id}.${format}` });
   } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
 });
 app.post('/api/optimize', upload.single('audio'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'File audio wajib dipilih.' });
+  const speed = parseAudioSpeed(req.body.speed, 1);
+  const robloxPlaybackSpeed = parseRobloxSpeed(req.body.robloxPlaybackSpeed, 1);
+  if (speed === null || robloxPlaybackSpeed === null) { cleanup(req.file.path); return res.status(400).json({ error: 'Speed audio atau Roblox Speed tidak valid.' }); }
   const id = crypto.randomUUID();
   const output = path.join(outputDir, `${id}.mp3`);
   try {
-    await runFfmpeg(req.file.path, output, ['-filter:a', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-codec:a', 'libmp3lame', '-b:a', '192k']);
+    await runFfmpeg(req.file.path, output, [...audioFilterArgs(speed, ['loudnorm=I=-16:TP=-1.5:LRA=11']), '-codec:a', 'libmp3lame', '-b:a', '192k']);
     cleanup(req.file.path);
-    const stat = fs.statSync(output);
+    const stat = assertOutputFile(output);
+    await validateAudioFile(output);
     outputOwners.set(`${id}.mp3`, requestEmail(req));
     await saveOutputOwner(`${id}.mp3`, requestEmail(req));
     const name = `${safeName(req.file.originalname).replace(/\.[^.]+$/, '')}-optimized.mp3`;
     setTimeout(() => cleanup(output), 15 * 60 * 1000).unref();
-    res.json({ id, name, size: stat.size, downloadUrl: `/api/download/${id}.mp3` });
+    res.json({ id, name, format: 'mp3', speed, robloxPlaybackSpeed, size: stat.size, downloadUrl: `/api/download/${id}.mp3` });
   } catch (error) { cleanup(req.file.path, output); res.status(500).json({ error: error.message }); }
 });
 app.post('/api/remix', upload.single('audio'), async (req, res) => {
@@ -1078,7 +1218,8 @@ app.post('/api/remix', upload.single('audio'), async (req, res) => {
   try {
     await runFfmpeg(req.file.path, output, ['-filter:a', tempoFilters.join(','), ...codecArgs]);
     cleanup(req.file.path);
-    const stat = fs.statSync(output);
+    const stat = assertOutputFile(output);
+    await validateAudioFile(output);
     outputOwners.set(outputName, requestEmail(req));
     await saveOutputOwner(outputName, requestEmail(req));
     const originalName = safeName(req.file.originalname).replace(/\.[^.]+$/, '') || 'audio';
@@ -1103,34 +1244,58 @@ app.get('/api/download/:file', async (req, res) => {
   res.download(fullPath, file);
 });
 
-app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) => {
+app.post('/api/roblox/upload-audio', robloxUploadMiddleware, async (req, res) => {
   if (!requireUser(req, res)) return;
   if (!requireRobloxSecret(res)) return;
+  if (req.body === undefined || req.body === null) return res.status(400).json({ success: false, error: 'Request body is empty' });
   const session = getRobloxApiSession(req);
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
-  if (!req.file) return res.status(400).json({ success: false, error: 'File harus berupa audio.' });
+  if (!req.file) {
+    const contentLength = Number(req.get('content-length') || 0);
+    if (!Object.keys(req.body).length && contentLength === 0) return res.status(400).json({ success: false, error: 'Request body is empty' });
+    return res.status(400).json({ success: false, error: 'Audio file is required' });
+  }
+  const fileStat = fs.statSync(req.file.path);
+  if (!fileStat.size) {
+    cleanup(req.file.path);
+    return res.status(400).json({ success: false, error: 'Audio file is empty' });
+  }
   const contentType = audioContentType(req.file);
   if (!contentType) {
     cleanup(req.file.path);
-    return res.status(400).json({ success: false, error: 'File upload Roblox harus berupa audio.' });
+    return res.status(415).json({ success: false, error: 'Unsupported audio format' });
   }
   const creatorType = session?.creatorType === 'group' ? 'group' : 'user';
   const creatorId = String(session?.creatorId || session?.userId || 'Unknown').trim();
-  if (!creatorId || creatorId === 'Unknown') return res.status(403).json({ success: false, error: `${creatorType === 'group' ? 'Community/Group' : 'User'} ID belum diatur.` });
+  if (!creatorId || creatorId === 'Unknown' || !/^\d+$/.test(creatorId)) {
+    cleanup(req.file.path);
+    return res.status(400).json({ success: false, error: 'Creator ID is required and must be numeric' });
+  }
+  try {
+    await validateAudioFile(req.file.path);
+  } catch (error) {
+    cleanup(req.file.path);
+    return res.status(415).json({ success: false, error: 'Audio data cannot be read' });
+  }
   const remixSpeed = Number.parseFloat(String(req.body.remixSpeed || '').trim());
   const robloxPlaybackSpeed = Number.parseFloat(String(req.body.robloxPlaybackSpeed || '').trim());
+  if (req.body.robloxPlaybackSpeed !== undefined && (!Number.isFinite(robloxPlaybackSpeed) || robloxPlaybackSpeed <= 0 || robloxPlaybackSpeed > 16)) {
+    cleanup(req.file.path);
+    return res.status(400).json({ success: false, error: 'Roblox Speed harus antara 0.01 dan 16.00.' });
+  }
   const hasRemixMetadata = Number.isFinite(remixSpeed) && Number.isFinite(robloxPlaybackSpeed) && remixSpeed > 0 && robloxPlaybackSpeed > 0;
   if (hasRemixMetadata && Math.abs((remixSpeed * robloxPlaybackSpeed) - 1) > 0.001) {
     cleanup(req.file.path);
     return res.status(400).json({ success: false, error: 'Metadata PlaybackSpeed tidak mengembalikan audio ke kecepatan normal.' });
   }
+  const hasRobloxPlaybackSpeed = req.body.robloxPlaybackSpeed !== undefined;
   const remixMetadata = hasRemixMetadata ? {
     remixSpeed,
     robloxPlaybackSpeed,
     originalFilename: String(req.body.originalFilename || '').trim() || null,
     remixFilename: String(req.body.remixFilename || req.file.originalname).trim()
-  } : null;
+  } : hasRobloxPlaybackSpeed ? { robloxPlaybackSpeed } : null;
   const safeDisplayName = safeName(req.body.displayName || req.body.name || req.file.originalname).replace(/\.[^.]+$/, '').slice(0, 50) || 'Audio';
   let operationId = null;
   try {
@@ -1167,7 +1332,8 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
       if (immediateAssetId) {
         history.unshift({ id: immediateAssetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
         await saveRobloxAsset(requestEmail(req), immediateAssetId, req.file.originalname, remixMetadata);
-        return res.json({ success: true, assetId: immediateAssetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
+        if (!isValidAssetId(immediateAssetId)) return res.status(502).json({ success: false, error: 'Upload provider did not return a valid asset ID' });
+        return res.json({ success: true, assetId: String(immediateAssetId), robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
       }
       console.warn('[Roblox upload] accepted response missing operation ID', { status: uploadResponse.status, response: summarizeRobloxResponse(uploadData) });
       return res.status(502).json({ success: false, error: 'Roblox menerima response tanpa operation ID. Upload belum dapat diverifikasi.' });
@@ -1175,14 +1341,14 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     robloxOperations.set(operationId, { ownerEmail: requestEmail(req), originalName: req.file.originalname, remixMetadata });
     const operationResult = await pollRobloxOperation(apiKey, operationId);
     const assetId = extractRobloxAssetId(operationResult);
-    if (!assetId) {
+    if (!isValidAssetId(assetId)) {
       console.warn('[Roblox upload] completed operation without asset ID', { operation: `${operationId.slice(0, 8)}...`, response: summarizeRobloxResponse(operationResult) });
-      return res.status(202).json({ success: false, pending: true, operationId, error: 'Roblox selesai memproses, tetapi response belum memuat Asset ID. Operation tetap dapat dipolling.' });
+      return res.status(502).json({ success: false, error: 'Upload provider did not return a valid asset ID' });
     }
     history.unshift({ id: assetId, name: req.file.originalname, status: 'Uploaded', ownerEmail: requestEmail(req), createdAt: new Date().toISOString(), remixMetadata });
     await saveRobloxAsset(requestEmail(req), assetId, req.file.originalname, remixMetadata);
     robloxOperations.delete(operationId);
-    res.json({ success: true, assetId, robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
+    res.json({ success: true, assetId: String(assetId), robloxCreator: { type: creatorType, id: creatorId }, remixMetadata });
   } catch (error) {
     cleanup(req.file.path);
     const message = error.message || 'Roblox API unavailable.';
@@ -1191,7 +1357,8 @@ app.post('/api/roblox/upload-audio', upload.single('audio'), async (req, res) =>
     if (message.includes('Upload limit reached')) return res.status(429).json({ success: false, error: 'Upload limit reached.' });
     if (message.includes('Roblox moderation failed')) return res.status(400).json({ success: false, error: message, operationId });
     if (message.includes('still processing')) return res.status(202).json({ success: false, pending: true, operationId, error: 'Roblox is still processing this upload.' });
-    res.status(503).json({ success: false, error: 'Roblox API unavailable.' });
+    const status = message.includes('timeout') ? 504 : 503;
+    res.status(status).json({ success: false, error: message.includes('timeout') ? 'Roblox API timeout.' : 'Roblox API unavailable.' });
   }
 });
 app.get('/api/roblox/operations/:id', async (req, res) => {
