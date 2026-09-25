@@ -1330,7 +1330,7 @@ app.post('/api/roblox/upload-audio', robloxUploadMiddleware, async (req, res) =>
   const apiKey = decryptRobloxApiKey(session?.encryptedKey);
   if (!apiKey) return res.status(401).json({ success: false, error: 'Connect Roblox API terlebih dahulu.' });
   if (!req.file) {
-    return res.status(400).json({ success: false, error: 'Backend tidak menerima file audio pada field "audio".' });
+    return res.status(400).json({ success: false, error: 'Backend tidak menerima file audio pada field "file".' });
   }
   const fileStat = fs.statSync(req.file.path);
   if (!fileStat.size) {
