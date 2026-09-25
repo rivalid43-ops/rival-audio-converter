@@ -528,7 +528,7 @@ function downloadYoutubeAudio(sourceUrl) {
     const child = spawn(ytDlpCommand, args, { windowsHide: true });
     const timeout = setTimeout(() => child.kill('SIGTERM'), 120000);
     child.stderr.on('data', (chunk) => { errorOutput += chunk.toString(); });
-    child.on('error', (error) => { clearTimeout(timeout); reject(error.code === 'ENOENT' ? new Error('yt-dlp belum terpasang. Atur YT_DLP_PATH atau pasang yt-dlp di server.') : error); });
+    child.on('error', (error) => { clearTimeout(timeout); reject(error.code === 'ENOENT' ? new Error('yt-dlp tidak tersedia di server. Pastikan deployment memakai nixpacks.toml terbaru (nixPkgs/aptPkgs yt-dlp), atau atur YT_DLP_PATH ke executable yt-dlp.') : error); });
     child.on('close', (code) => {
       clearTimeout(timeout);
       const outputPath = `${baseName}.wav`;
@@ -1500,23 +1500,18 @@ app.post('/api/roblox-api/connect', async (req, res) => {
   if (!apiKey) return res.status(400).json({ ok: false, error: 'Paste your Roblox API Key' });
   if (!creatorId) return res.status(400).json({ ok: false, error: `${creatorType === 'group' ? 'Community/Group' : 'Creator/User'} ID wajib diisi.` });
   if (!/^\d+$/.test(creatorId)) return res.status(400).json({ ok: false, error: 'ID Roblox harus berupa angka.' });
-  try {
-    await verifyRobloxApiKey(apiKey, creatorType, creatorId);
-  } catch (error) {
-    return res.status(401).json({ ok: false, error: error.message || 'API key Roblox tidak valid.' });
-  }
   setRobloxApiSession(req, {
     encryptedKey: encryptRobloxApiKey(apiKey),
     creatorType,
     creatorId,
     userId: creatorType === 'user' ? creatorId : 'Unknown',
     creator: creatorType === 'group' ? 'Community/Group' : 'Personal User',
-    permissions: ['Assets: Write pending Roblox preflight'],
-    apiStatus: 'READY_FOR_UPLOAD_CHECK',
+    permissions: ['Assets: Write checked during upload'],
+    apiStatus: 'SAVED_UPLOAD_CHECK_PENDING',
     connected: true,
     connectedAt: new Date().toISOString()
   });
-  res.json({ ok: true, connected: true, creatorType, creatorId, userId: creatorType === 'user' ? creatorId : 'Unknown', creator: creatorType === 'group' ? 'Community/Group' : 'Personal User', permissions: ['Assets: Write pending Roblox preflight'], apiStatus: 'READY_FOR_UPLOAD_CHECK', message: 'API key tersimpan aman di memory server. Permission dan resource akan diverifikasi oleh endpoint upload resmi Roblox.' });
+  res.json({ ok: true, connected: true, creatorType, creatorId, userId: creatorType === 'user' ? creatorId : 'Unknown', creator: creatorType === 'group' ? 'Community/Group' : 'Personal User', permissions: ['Assets: Write checked during upload'], apiStatus: 'SAVED_UPLOAD_CHECK_PENDING', message: 'API key tersimpan aman. Permission Assets dan resource akan diverifikasi saat upload resmi ke Roblox.' });
 });
 app.get('/api/roblox-api/session', (req, res) => {
   if (!robloxKeySecretReady) return res.json({ connected: false, apiStatus: 'SERVER_SECRET_NOT_CONFIGURED' });

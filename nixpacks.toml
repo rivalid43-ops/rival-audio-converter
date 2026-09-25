@@ -3,4 +3,4 @@ aptPkgs = ["ffmpeg", "yt-dlp"]
 nixPkgs = ["ffmpeg", "yt-dlp"]
 
 [phases.build]
-cmds = ["ffmpeg -version", "npm run build"]
+cmds = ["ffmpeg -version", "yt-dlp --version", "npm run build"]
