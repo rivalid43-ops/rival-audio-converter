@@ -101,13 +101,17 @@ async function uploadResultToRoblox(result, robloxPlaybackSpeed, setStatus) {
   if (!Number.isFinite(Number(robloxPlaybackSpeed)) || Number(robloxPlaybackSpeed) <= 0 || Number(robloxPlaybackSpeed) > 16) throw new Error('Roblox Speed must be between 0.01 and 16.00.');
   setStatus('Preparing');
   const file = await readValidatedAudioBlob(result.downloadUrl, result.name);
+  if (!(file instanceof File) || file.size <= 0) throw new Error('Request body cannot be empty. File hasil remix tidak valid atau kosong.');
   const form = new FormData();
   form.append('file', file, file.name);
-  form.append('displayName', result.name.replace(/\.[^.]+$/, ''));
+  form.append('displayName', (result.name || 'remix').replace(/\.[^.]+$/, '') || 'remix');
   form.append('robloxPlaybackSpeed', String(robloxPlaybackSpeed));
-  if (!form.has('file')) throw new Error('FormData tidak berisi file audio.');
+  form.append('remixSpeed', String(Number(result.remixSpeed || result.speed || 1)));
+  form.append('originalFilename', String(result.originalFilename || result.name || 'audio'));
+  form.append('remixFilename', String(result.name || 'remix'));
+  if (!form.has('file')) throw new Error('Request body cannot be empty. FormData tidak berisi file audio.');
   const audioPart = form.get('file');
-  if (!(audioPart instanceof File) || audioPart.size <= 0) throw new Error('File audio kosong atau tidak valid.');
+  if (!(audioPart instanceof File) || audioPart.size <= 0) throw new Error('Request body cannot be empty. File audio kosong atau tidak valid.');
   console.info('[Roblox upload debug]', { endpoint: '/api/roblox/upload-audio', audioFileSize: audioPart.size, audioFileType: audioPart.type, audioFileName: audioPart.name, formDataKeys: Array.from(form.keys()) });
   setStatus('Uploading');
   let response = await fetch('/api/roblox/upload-audio', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form });
@@ -215,7 +219,7 @@ function LegacyRemixPage({ notify }) {
   const stopPreview = () => { if (!audioRef.current) return; audioRef.current.pause(); audioRef.current.currentTime = 0; setPreviewing(false); };
   const exportRemix = async () => { if (!file) return; setBusy(true); setResult(null); const form = new FormData(); form.append('audio', file); form.append('speed', String(selectedSpeed)); form.append('format', format); try { const response = await fetch('/api/remix', { method: 'POST', credentials: 'include', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setResult(data); notify({ type: 'success', title: 'Remix Berhasil', message: 'Final remix audio berhasil dibuat dan siap dipreview.' }); } catch (error) { setResult({ error: error.message }); notify({ type: 'error', title: 'Remix Gagal', message: error.message || 'Proses remix gagal.' }); } finally { setBusy(false); } };
   const downloadRemix = async () => { if (!result?.downloadUrl) return; setDownloadBusy(true); try { const response = await fetch(result.downloadUrl, { credentials: 'include' }); if (!response.ok) throw new Error('File hasil tidak ditemukan.'); const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = result.name; link.click(); URL.revokeObjectURL(url); notify({ type: 'success', title: 'Download Berhasil', message: 'Final remix audio berhasil didownload.' }); } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Download Gagal', message: error.message || 'File hasil tidak dapat didownload.' }); } finally { setDownloadBusy(false); } };
-  const uploadRemixToRoblox = async () => { if (!result?.downloadUrl) return; setUploadBusy(true); try { const data = await uploadResultToRoblox(result, result.robloxPlaybackSpeed || robloxSpeed, (status) => notify({ type: status === 'Success' ? 'success' : status === 'Failed' ? 'error' : 'progress', title: status, message: status === 'Processing' ? 'Roblox sedang memproses audio.' : 'Sedang mengirim audio ke Roblox.', duration: status === 'Success' || status === 'Failed' ? undefined : 0 })); setResult((current) => ({ ...current, assetId: data.assetId, robloxPlaybackSpeed: Number(data.remixMetadata?.robloxPlaybackSpeed || current.robloxPlaybackSpeed || robloxSpeed), audioIsOriginal: false, remixMetadata: data.remixMetadata })); notify({ type: 'success', title: 'Upload Berhasil', message: 'Audio berhasil disimpan ke Roblox.', action: { label: 'Copy Asset ID', onClick: () => navigator.clipboard.writeText(String(data.assetId)) } }); } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Upload Gagal', message: error.message || 'Upload ke Roblox gagal.' }); } finally { setUploadBusy(false); } };
+  const uploadRemixToRoblox = async () => { const finalRemix = result && result.downloadUrl ? { ...result } : null; if (!finalRemix?.downloadUrl || !finalRemix.name) { setResult((current) => ({ ...current, error: 'Hasil remix belum tersedia.' })); notify({ type: 'error', title: 'Upload Gagal', message: 'Hasil remix belum tersedia.' }); return; } setUploadBusy(true); try { const data = await uploadResultToRoblox(finalRemix, finalRemix.robloxPlaybackSpeed || robloxSpeed, (status) => notify({ type: status === 'Success' ? 'success' : status === 'Failed' ? 'error' : 'progress', title: status, message: status === 'Processing' ? 'Roblox sedang memproses audio.' : 'Sedang mengirim audio ke Roblox.', duration: status === 'Success' || status === 'Failed' ? undefined : 0 })); setResult((current) => ({ ...current, assetId: data.assetId, robloxPlaybackSpeed: Number(data.remixMetadata?.robloxPlaybackSpeed || current.robloxPlaybackSpeed || robloxSpeed), audioIsOriginal: false, remixMetadata: data.remixMetadata })); notify({ type: 'success', title: 'Upload Berhasil', message: 'Audio berhasil disimpan ke Roblox.', action: { label: 'Copy Asset ID', onClick: () => navigator.clipboard.writeText(String(data.assetId)) } }); } catch (error) { setResult((current) => ({ ...current, error: error.message })); notify({ type: 'error', title: 'Upload Gagal', message: error.message || 'Upload ke Roblox gagal.' }); } finally { setUploadBusy(false); } };
   const copyRobloxSpeed = () => navigator.clipboard.writeText(String(robloxSpeed));
   return <section className="panel standalone-panel remix-page"><div className="panel-heading"><div><span className="eyebrow">AUDIO REMIX</span><h2>Remix Musik</h2></div><span className="safe-badge"><LockKeyhole size={12} /> LOCAL PREVIEW</span></div><label className="drop-area remix-drop"><input type="file" accept="audio/*" onChange={(event) => chooseFile(event.target.files[0])} /><div className="drop-icon"><Upload size={21} /></div><strong>{file ? file.name : 'Upload audio untuk remix'}</strong><span>MP3, WAV, OGG, M4A, FLAC hingga 100 MB</span></label>{file && <><canvas ref={canvasRef} className="remix-waveform" width="1000" height="180" /><audio ref={audioRef} src={URL.createObjectURL(file)} onEnded={() => setPreviewing(false)} /><div className="remix-controls"><label className="field-label">SPEED MODE<select value={speedMode} onChange={(event) => { setSpeedMode(event.target.value); setResult(null); }}><option value="manual">Manual</option><option value="automatic">Automatic</option></select></label>{speedMode === 'automatic' ? <label className="field-label">AUTOMATIC SPEED<select value={automaticSpeed} onChange={(event) => { setAutomaticSpeed(Number(event.target.value)); setResult(null); }}><option value="1.00">1.00</option><option value="1.20">1.20</option><option value="1.50">1.50</option><option value="2.00">2.00</option></select></label> : <label className="field-label">SPEED / KECEPATAN<input type="range" min="0.5" max="4" step="0.01" value={speed} onChange={(event) => { setSpeed(Number(event.target.value)); setResult(null); }} /><strong>{speed.toFixed(2)}</strong></label>}<label className="field-label">FORMAT EXPORT<select value={format} onChange={(event) => { setFormat(event.target.value); setResult(null); }}><option value="mp3">MP3</option><option value="ogg">OGG</option><option value="flac">FLAC</option><option value="wav">WAV</option></select></label></div>
       <div className="result-actions"><button className="primary-button" onClick={togglePreview}>{previewing ? <><PauseIcon /> Pause Tes</> : <><Play size={16} /> Play Tes</>}</button><button className="secondary-button" onClick={() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPreviewing(false); }}>Stop</button><button className="convert-button" disabled={busy} onClick={exportRemix}>{busy ? 'Remixing...' : 'Export Remix'} <ArrowUpRight size={16} /></button></div>
@@ -314,25 +318,223 @@ function YoutubePage({ navigate, result, setResult, upload, robloxApi }) {
   const [robloxSpeed, setRobloxSpeed] = useState(1);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
   const selectedSource = sourceOptions.find((source) => source.id === sourcePlatform) || sourceOptions[0];
+
   const downloadSource = async () => {
-    setBusy(true); setError(''); setResult(null); setSourceInfo(null);
+    setBusy(true);
+    setError('');
+    setResult(null);
+    setSourceInfo(null);
+
     try {
-      const detectResponse = await fetch('/api/source/detect', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+      const detectResponse = await fetch('/api/source/detect', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+
       const detected = await detectResponse.json().catch(() => ({}));
-      if (!detectResponse.ok || detected.ok !== true) throw new Error(detected.error || 'Platform atau source tidak dapat dideteksi.');
-      if (detected.platform !== sourcePlatform) throw new Error(`Link ini terdeteksi sebagai ${detected.platform}, bukan ${selectedSource.label}.`);
+      if (!detectResponse.ok || detected.ok !== true) {
+        throw new Error(detected.error || 'Platform atau source tidak dapat dideteksi.');
+      }
+
+      if (detected.platform !== sourcePlatform) {
+        throw new Error(`Link ini terdeteksi sebagai ${detected.platform}, bukan ${selectedSource.label}.`);
+      }
+
       setSourceInfo(detected);
-      if (detected.platform !== 'youtube' && !detected.audio?.available) throw new Error(`${selectedSource.label}: metadata tersedia, tetapi API resmi tidak menyediakan file audio download. ${detected.audio?.reason || ''}`.trim());
-      if (!Number.isFinite(Number(robloxSpeed)) || Number(robloxSpeed) <= 0 || Number(robloxSpeed) > 16) throw new Error('Roblox speed harus antara 0.01 dan 16.00.');
+
+      if (detected.platform !== 'youtube' && !detected.audio?.available) {
+        const note = detected.audio?.reason ? ` ${detected.audio.reason}` : '';
+        throw new Error(`${selectedSource.label}: metadata tersedia, tetapi API resmi tidak menyediakan file audio download.${note}`.trim());
+      }
+
+      if (!Number.isFinite(Number(robloxSpeed)) || Number(robloxSpeed) <= 0 || Number(robloxSpeed) > 16) {
+        throw new Error('Roblox speed harus antara 0.01 dan 16.00.');
+      }
+
       const endpoint = detected.platform === 'youtube' ? '/api/youtube/download' : '/api/source/download';
-      const response = await fetch(endpoint, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() }, body: JSON.stringify({ url, format, speed, robloxPlaybackSpeed: robloxSpeed }) });
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': crypto.randomUUID()
+        },
+        body: JSON.stringify({ url, format, speed, robloxPlaybackSpeed: robloxSpeed })
+      });
+
       const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok !== true) throw new Error(data.error || 'Audio dari URL tidak dapat diproses.');
+      if (!response.ok || data.ok !== true) {
+        throw new Error(data.error || 'Audio dari URL tidak dapat diproses.');
+      }
+
       setResult(data);
-    } catch (downloadError) { setError(downloadError.message); } finally { setBusy(false); }
+    } catch (downloadError) {
+      setError(downloadError.message);
+    } finally {
+      setBusy(false);
+    }
   };
-  return <section className="panel standalone-panel youtube-page"><div className="youtube-hero"><div className="youtube-large-icon"><Download size={32} /></div><div><span className="eyebrow">DOWNLOAD VIA URL</span><h2>Audio source converter.</h2><p>Pilih platform, tempel link, lalu cek metadata melalui API resmi. Download hanya tersedia untuk sumber audio yang memang menyediakan file berizin.</p></div></div><div className="source-platforms" role="tablist" aria-label="Pilih platform sumber">{sourceOptions.map((source) => { const Icon = source.icon; return <button type="button" key={source.id} className={`source-platform ${sourcePlatform === source.id ? 'source-platform-active' : ''}`} onClick={() => { setSourcePlatform(source.id); setUrl(''); setSourceInfo(null); setError(''); }} role="tab" aria-selected={sourcePlatform === source.id}><span className={`source-logo source-logo-${source.id}`}><Icon size={17} /></span><strong>{source.label}</strong></button>; })}</div><div className="large-input-row"><input value={url} onChange={(event) => setUrl(event.target.value)} placeholder={selectedSource.placeholder} aria-label={`${selectedSource.label} URL`} /><button className="primary-button" disabled={busy || !url.trim()} onClick={downloadSource}>{busy ? 'Checking...' : 'Check & Process'} <Download size={16} /></button></div>{sourceInfo?.metadata && <div className="source-metadata">{sourceInfo.metadata.thumbnail && <img src={sourceInfo.metadata.thumbnail} alt="" /> }<div><strong>{sourceInfo.metadata.title || 'Metadata found'}</strong><span>{sourceInfo.metadata.creator || selectedSource.label}</span></div></div>}<div className="remix-controls"><label className="field-label">PLAY SPEED<select value={speed} onChange={(event) => setSpeed(Number(event.target.value))}><option value="0.5">0.50x</option><option value="0.75">0.75x</option><option value="1">1.00x</option><option value="1.25">1.25x</option><option value="1.5">1.50x</option><option value="2">2.00x</option></select></label><label className="field-label">EXPORT FORMAT<select value={format} onChange={(event) => setFormat(event.target.value)}><option value="mp3">MP3</option><option value="wav">WAV</option><option value="ogg">OGG</option><option value="flac">FLAC</option></select></label></div>{error && <div className="notice-bar notice-error">{error}</div>}{result?.downloadUrl && <section className="panel result-panel"><div className="panel-heading"><div><span className="eyebrow">URL AUDIO READY</span><h2>{result.name}</h2></div><span className="success-label"><Check size={13} /> DOWNLOADED</span></div><audio controls src={result.downloadUrl} /><div className="result-actions"><a className="download-button" href={result.downloadUrl} download={result.name}><Download size={16} /> Download Result</a>{robloxApi?.connected ? <button className="roblox-button" onClick={upload}><CloudUpload size={16} /> Save to Roblox</button> : <button className="roblox-button" onClick={() => window.location.href = '/roblox-api'}>Connect Roblox API</button>}</div><div className="notice-bar notice-success">Audio nyata berhasil diproses pada {result.speed.toFixed(2)}x dan siap dipreview.</div></section>}<button className="text-button back-button" onClick={() => navigate('converter')}>Back to converter</button></section>;
+
+  const downloadResult = async () => {
+    if (!result?.downloadUrl || !result.name) {
+      setError('Hasil audio belum tersedia.');
+      return;
+    }
+
+    try {
+      const file = await readValidatedAudioBlob(result.downloadUrl, result.name);
+      const objectUrl = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = result.name;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (downloadError) {
+      setError(downloadError.message || 'Download gagal.');
+    }
+  };
+
+  const saveResultToRoblox = async () => {
+    if (!result?.downloadUrl) {
+      setError('Hasil audio belum tersedia.');
+      return;
+    }
+
+    if (!robloxApi?.connected) {
+      window.location.hash = '#/roblox-api';
+      return;
+    }
+
+    try {
+      await upload();
+    } catch (uploadError) {
+      setError(uploadError.message || 'Upload ke Roblox gagal.');
+    }
+  };
+
+  const playResult = () => {
+    const player = document.querySelector('.youtube-page audio');
+    if (player) player.play();
+  };
+
+  return (
+    <section className="panel standalone-panel youtube-page">
+      <div className="youtube-hero">
+        <div className="youtube-large-icon"><Download size={32} /></div>
+        <div>
+          <span className="eyebrow">DOWNLOAD VIA URL</span>
+          <h2>Audio source converter.</h2>
+          <p>Pilih platform, tempel link, lalu cek metadata melalui API resmi. Download hanya tersedia untuk sumber audio yang memang menyediakan file berizin.</p>
+        </div>
+      </div>
+
+      <div className="source-platforms" role="tablist" aria-label="Pilih platform sumber">
+        {sourceOptions.map((source) => {
+          const Icon = source.icon;
+          return (
+            <button
+              type="button"
+              key={source.id}
+              className={`source-platform ${sourcePlatform === source.id ? 'source-platform-active' : ''}`}
+              onClick={() => {
+                setSourcePlatform(source.id);
+                setUrl('');
+                setSourceInfo(null);
+                setError('');
+              }}
+              role="tab"
+              aria-selected={sourcePlatform === source.id}
+            >
+              <span className={`source-logo source-logo-${source.id}`}><Icon size={17} /></span>
+              <strong>{source.label}</strong>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="large-input-row">
+        <input
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder={selectedSource.placeholder}
+          aria-label={`${selectedSource.label} URL`}
+        />
+        <button className="primary-button" disabled={busy || !url.trim()} onClick={downloadSource}>
+          {busy ? 'Checking...' : 'Check & Process'} <Download size={16} />
+        </button>
+      </div>
+
+      {sourceInfo?.metadata && (
+        <div className="source-metadata">
+          {sourceInfo.metadata.thumbnail && <img src={sourceInfo.metadata.thumbnail} alt="" />}
+          <div>
+            <strong>{sourceInfo.metadata.title || 'Metadata found'}</strong>
+            <span>{sourceInfo.metadata.creator || selectedSource.label}</span>
+          </div>
+        </div>
+      )}
+
+      <div className="remix-controls">
+        <label className="field-label">PLAY SPEED
+          <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))}>
+            <option value="0.5">0.50x</option>
+            <option value="0.75">0.75x</option>
+            <option value="1">1.00x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.50x</option>
+            <option value="2">2.00x</option>
+          </select>
+        </label>
+
+        <label className="field-label">ROBLOX SPEED
+          <input type="number" min="0.01" max="16" step="0.01" value={robloxSpeed} onChange={(event) => setRobloxSpeed(Number(event.target.value))} />
+        </label>
+
+        <label className="field-label">OUTPUT FORMAT
+          <select value={format} onChange={(event) => setFormat(event.target.value)}>
+            <option value="mp3">MP3</option>
+            <option value="wav">WAV</option>
+            <option value="ogg">OGG</option>
+            <option value="flac">FLAC</option>
+          </select>
+        </label>
+      </div>
+
+      {error && <div className="notice-bar notice-error">{error}</div>}
+
+      {result?.downloadUrl && (
+        <section className="panel result-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="eyebrow">AUDIO READY</span>
+              <h2>{result.name}</h2>
+            </div>
+            <span className="success-label"><Check size={13} /> READY</span>
+          </div>
+
+          <audio controls preload="metadata" src={result.downloadUrl} />
+
+          <div className="result-actions">
+            <button className="primary-button" onClick={playResult}><Play size={16} /> Test Play</button>
+            <button className="download-button" onClick={downloadResult}><Download size={16} /> Download Audio</button>
+            {robloxApi?.connected ? (
+              <button className="roblox-button" onClick={saveResultToRoblox}><CloudUpload size={16} /> Save to Roblox</button>
+            ) : (
+              <button className="roblox-button" onClick={() => { window.location.hash = '#/roblox-api'; }}>Connect Roblox API</button>
+            )}
+          </div>
+
+          {result.assetId && <div className="notice-bar notice-success">Asset ID: {result.assetId}</div>}
+        </section>
+      )}
+
+      <button className="text-button back-button" onClick={() => navigate('converter')}>Back to converter</button>
+    </section>
+  );
 }
 function Uploader({ navigate }) { return <section className="panel standalone-panel uploader-page"><div className="uploader-icon"><CloudUpload size={28} /></div><span className="eyebrow">ROBLOX OPEN CLOUD</span><h2>Upload directly to Roblox</h2><p>Use your own Open Cloud API key. This app never asks for Roblox password, cookie, or .ROBLOSECURITY.</p><div className="notice-bar notice-success"><Check size={16} /> API-key based upload is enabled.</div><button className="primary-button" onClick={() => navigate('roblox-api')}>Connect Roblox API <ArrowUpRight size={16} /></button><div className="upload-steps"><Step number="01" label="Connect API" /><Step number="02" label="Upload audio" /><Step number="03" label="Moderation" /></div></section>; }
 function Step({ number, label }) { return <div><span>{number}</span><strong>{label}</strong></div>; }
@@ -347,6 +549,18 @@ function Profile({ session }) {
   const [name, setName] = useState(session.name || 'Rivalid');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  const validateApiForm = () => {
+    const key = apiKey.trim();
+    const targetId = creatorId.trim();
+    if (!key) return 'API Key Roblox wajib diisi.';
+    if (/\s/.test(key)) return 'API Key Roblox tidak boleh mengandung spasi atau baris baru.';
+    if (key.length < 20) return 'API Key Roblox terlihat terlalu pendek. Salin API key lengkap dari Roblox Creator Dashboard.';
+    if (!/^\d+$/.test(targetId) || Number(targetId) <= 0) {
+      return `${creatorType === 'group' ? 'Community/Group ID' : 'Creator/User ID'} harus berupa angka positif.`;
+    }
+    return '';
+  };
   useEffect(() => {
     fetch('/api/auth/me', { credentials: 'include' }).then((response) => response.ok ? response.json() : null).then((data) => { if (data?.user) { setProfileUser(data.user); setName(data.user.name || session.name || 'Rivalid'); } }).catch(() => {});
   }, [session.name]);
@@ -395,14 +609,15 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
   };
 
   const connectApi = async () => {
-    if (!apiKey.trim()) { setError('Paste your Roblox API Key'); return; }
+    const validationError = validateApiForm();
+    if (validationError) { setError(validationError); return; }
     setBusy(true); setError(''); setMessage('');
     try {
       const response = await fetch('/api/roblox-api/connect', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, creatorType, creatorId })
+        body: JSON.stringify({ apiKey: apiKey.trim(), creatorType, creatorId: creatorId.trim() })
       });
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || 'Invalid Roblox API Key');
@@ -470,7 +685,7 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
     {!robloxApi.connected ? <>
       <label className="field-label" htmlFor="roblox-api-key">Paste your Roblox API Key</label>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#0f1720', border: '1px solid rgba(200,247,110,0.2)', borderRadius: 12, padding: '0 12px' }}>
-        <input id="roblox-api-key" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Roblox API Key" style={{ flex: 1, background: 'transparent', border: 'none', color: '#edf1ec', padding: '14px 0', outline: 'none' }} />
+        <input id="roblox-api-key" type={showKey ? 'text' : 'password'} value={apiKey} onChange={(event) => { setApiKey(event.target.value); setError(''); }} placeholder="Paste your Roblox API Key" autoComplete="off" minLength={20} required style={{ flex: 1, background: 'transparent', border: 'none', color: '#edf1ec', padding: '14px 0', outline: 'none' }} />
         <button type="button" className="secondary-button" onClick={() => setShowKey(!showKey)}>{showKey ? 'Hide' : 'Show'}</button>
       </div>
       <label className="field-label" htmlFor="roblox-creator-type" style={{ marginTop: 14 }}>UPLOAD TARGET</label>
@@ -479,7 +694,7 @@ function RobloxApiPage({ robloxApi, setRobloxApi }) {
         <option value="group">Community / Group</option>
       </select>
       <label className="field-label" htmlFor="roblox-creator-id" style={{ marginTop: 14 }}>{creatorType === 'group' ? 'Community / Group ID' : 'Creator / User ID'}</label>
-      <input id="roblox-creator-id" value={creatorId} onChange={(event) => setCreatorId(event.target.value)} placeholder="Contoh: 123456789" inputMode="numeric" />
+      <input id="roblox-creator-id" value={creatorId} onChange={(event) => { setCreatorId(event.target.value.replace(/\D/g, '')); setError(''); }} placeholder="Contoh: 123456789" inputMode="numeric" pattern="[0-9]+" minLength={1} required />
       <small className="muted-note">API key harus memiliki akses Assets pada target yang dipilih.</small>
       <div className="result-actions" style={{ marginTop: 18 }}>
         <button className="primary-button" disabled={busy} onClick={connectApi}>{busy ? 'Connecting...' : 'Connect API'}</button>

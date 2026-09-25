@@ -318,7 +318,7 @@ setInterval(() => {
 app.use(['/api/payments', '/api/chats'], async (req, res, next) => {
   try { await paymentDatabaseReady; next(); } catch (error) { res.status(503).json({ error: 'Database pembayaran belum siap.' }); }
 });
-app.use(['/api/convert', '/api/optimize', '/api/remix', '/api/source/download', '/api/youtube/download', '/api/roblox/upload-audio'], (req, res, next) => {
+app.use(['/api/convert', '/api/optimize', '/api/remix', '/api/source/download', '/api/youtube/download'], (req, res, next) => {
   if (!requireUser(req, res)) return;
   usageGuard(req, res, next);
 });
