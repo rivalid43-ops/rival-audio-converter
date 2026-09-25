@@ -37,6 +37,7 @@ app.set('trust proxy', 1);
 const uploadDir = path.join(root, 'uploads');
 const outputDir = path.join(root, 'converted');
 const paymentDatabaseFile = path.join(root, 'database', 'payments.sqlite');
+const defaultPaymentQrFile = 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg';
 const ffmpegCommand = String(process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg').trim();
 const ytDlpCommand = String(process.env.YT_DLP_PATH || 'yt-dlp').trim();
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -178,7 +179,10 @@ async function initializePaymentDatabase() {
     file_name TEXT PRIMARY KEY, owner_email TEXT NOT NULL, created_at TEXT NOT NULL
   )`);
   await databaseRun('INSERT OR IGNORE INTO payment_settings (id, payment_target, qr_image, updated_at) VALUES (1, ?, ?, ?)', [String(process.env.PAYMENT_TARGET || ''), String(process.env.PAYMENT_QR_FILE || ''), new Date().toISOString()]);
-  await databaseRun('UPDATE payment_settings SET payment_target = ?, qr_image = ? WHERE id = 1 AND payment_target = ? AND qr_image = ?', ['', '', 'Transfer manual - tujuan pembayaran belum diatur admin', 'qr_ID1026535357986_22.09.26_1790094652_1790094652329.jpg']);
+  await databaseRun('UPDATE payment_settings SET payment_target = ?, qr_image = ? WHERE id = 1 AND payment_target = ? AND qr_image = ?', ['', '', 'Transfer manual - tujuan pembayaran belum diatur admin', defaultPaymentQrFile]);
+  if (fs.existsSync(path.join(root, 'client', defaultPaymentQrFile))) {
+    await databaseRun('UPDATE payment_settings SET qr_image = ?, updated_at = ? WHERE id = 1 AND (qr_image IS NULL OR qr_image = ?)', [defaultPaymentQrFile, new Date().toISOString(), '']);
+  }
   const orders = await databaseAll('SELECT * FROM payment_orders ORDER BY created_at DESC');
   const messages = await databaseAll('SELECT order_id, sender, text, sent_at FROM payment_messages ORDER BY id ASC');
   const savedAssets = await databaseAll('SELECT owner_email, asset_id, name, status, created_at, remix_metadata FROM roblox_asset_history ORDER BY created_at DESC');
@@ -332,7 +336,10 @@ const upload = multer({
   fileFilter: (req, file, cb) => cb(null, file.mimetype.startsWith('audio/') || file.mimetype.startsWith('video/') || /\.(mp3|wav|ogg|m4a|flac|aac|mp4|mov|mkv|webm|avi)$/i.test(file.originalname))
 });
 const imageUpload = multer({
-  dest: uploadDir,
+  storage: multer.diskStorage({
+    destination: uploadDir,
+    filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
+  }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => cb(null, /^image\/(png|jpe?g|webp)$/.test(file.mimetype))
 });
@@ -363,6 +370,7 @@ function robloxUploadMiddleware(req, res, next) {
     logRobloxUploadRequest(req, 'after-multipart-parser');
     if (!error) {
       if (req.body === undefined || req.body === null) req.body = {};
+      if (!req.file) return res.status(400).json({ success: false, error: 'File remix wajib dikirim pada field multipart "file".' });
       return next();
     }
     if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ success: false, error: 'Audio file is too large.' });
